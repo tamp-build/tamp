@@ -18,7 +18,7 @@ satellites below. Tamp itself dogfoods the chain — see
 | [`Tamp.Sbom`](../src/Tamp.Sbom) | Contract package | Typed `CycloneDxBom` record + `ISbomSource`/`ISbomSink` (CycloneDX 1.6/1.7 with first-class VEX) |
 | [`Tamp.CycloneDx.V6`](../src/Tamp.CycloneDx.V6) | SBOM producer (.NET) | CommandPlan wrapping `dotnet-CycloneDX 6.x`; emits a CycloneDX JSON BOM. Best signal for managed .NET projects (just the NuGet graph; ~18 components on Tamp). |
 | [`Tamp.Syft.V1`](../src/Tamp.Syft.V1) | SBOM producer (universal) | CommandPlan wrapping Anchore `syft 1.x`. Three subcommands — `ScanDirectory` / `ScanImage` / `ScanArchive`. Catalogs every ecosystem syft knows (npm / PyPI / Cargo / Go / Maven / NuGet / Gem / Composer / Pub / Conan / etc.) plus file-level cataloging. The right SBOM producer for non-.NET source trees and for container images. Wave 2. |
-| [`Tamp.OpenGrep.V1`](../src/Tamp.OpenGrep.V1) | SAST producer (pattern) | CommandPlan wrapping `opengrep 1.x`; emits SARIF findings |
+| [`Tamp.OpenGrep`](../src/Tamp.OpenGrep) | SAST producer (pattern) | CommandPlan wrapping `opengrep 1.x`; emits SARIF findings. See the package README for the GitHub-Releases install path (no winget / scoop / brew / PyPI / NuGet distribution). |
 | Roslyn analyzers (built-in path) | SAST producer (semantic) | `SonarAnalyzer.CSharp` + `Roslynator.Analyzers` + `Microsoft.CodeAnalysis.NetAnalyzers` activated via `/p:IncludeSecurityAnalyzers=true`; per-(project, TFM) SARIF via MSBuild's `/p:ErrorLog`. No separate satellite — see TAM-248. |
 | [`Tamp.OsvScanner.V2`](../src/Tamp.OsvScanner.V2) | SCA producer (cross-ecosystem) | CommandPlan wrapping `osv-scanner 2.x`; reads the CycloneDX SBOM and queries OSV.dev (npm / PyPI / Cargo / Go / Maven / NuGet / Packagist / Pub). SARIF output, slots into the chain like the SAST sources but kept as a separate file (tamp-cve.sarif) so DefectDojo can route SAST and SCA to different triage queues. Wave 2 — pulled forward for non-.NET coverage. |
 | [`Tamp.DependencyTrack.V1`](../src/Tamp.DependencyTrack.V1) | SBOM/CVE/VEX hub | REST client for OWASP Dependency-Track v4.x (upload BOM, wait for analysis, export FPF) |
@@ -86,7 +86,7 @@ using Tamp;
 using Tamp.Sarif;
 using Tamp.Sbom;
 using Tamp.CycloneDx.V6;
-using Tamp.OpenGrep.V1;
+using Tamp.OpenGrep;
 using Tamp.DependencyTrack.V1;
 using Tamp.DefectDojo.V2;
 
