@@ -315,7 +315,51 @@ public abstract class SecurityPipelineBuild : TampBuild
             }
         });
 
+    /// <summary>
+    /// Read the produced SBOM + per-scanner SARIF files and emit OTel metrics via
+    /// <see cref="SecurityPipelineMetrics"/>: <c>tamp.security.sbom.components_count</c>
+    /// tagged by producer + component-type, and <c>tamp.security.scan.findings_count</c>
+    /// tagged by tool + severity. Files that don't exist (e.g. a scan target was skipped)
+    /// are silently no-op'd; files that fail to parse log a stderr warning.
+    /// </summary>
+    /// <remarks>
+    /// Override <see cref="SecurityMetricsToolTagForRoslynSarif"/> /
+    /// <see cref="SecurityMetricsProducerTagForSbom"/> if the adopter has substituted
+    /// the upstream tool (e.g. swapped CycloneDX → Syft on the Sbom target — set
+    /// <see cref="SecurityMetricsProducerTagForSbom"/> to <c>"syft"</c>).
+    /// </remarks>
+    protected virtual Target SecurityMetrics => _ => _
+        .Description("Emit tamp.security.sbom.components_count + tamp.security.scan.findings_count OTel metrics from the produced SBOM + SARIF files.")
+        .DependsOn(nameof(Sbom), nameof(SecurityScanOpenGrep), nameof(SecurityScanRoslyn), nameof(SecurityScanCveSbom), nameof(SecurityScanTrivy))
+        .Executes(() =>
+        {
+            // SBOM → components_count tagged by (producer, type).
+            SecurityPipelineMetrics.EmitComponentsFromBom(SecuritySbomFile, SecurityMetricsProducerTagForSbom);
+
+            // Per-scanner SARIF → findings_count tagged by (tool, severity).
+            SecurityPipelineMetrics.EmitFindingsFromSarif(SecuritySarifOpenGrepFile, "opengrep");
+            SecurityPipelineMetrics.EmitFindingsFromSarif(SecuritySarifCveFile, "osvscanner");
+            SecurityPipelineMetrics.EmitFindingsFromSarif(SecuritySarifTrivyFile, "trivy");
+
+            // Roslyn ships per-(project, TFM) SARIFs in the dir. Emit one batched count per file —
+            // the (project, TFM) detail is intentionally NOT a metric tag (high-cardinality cost);
+            // every roslyn SARIF in the dir aggregates under tool="roslyn".
+            if (SecuritySarifRoslynDir.DirectoryExists())
+            {
+                foreach (var sarif in SecuritySarifRoslynDir.GlobFiles("*.sarif"))
+                {
+                    SecurityPipelineMetrics.EmitFindingsFromSarif(sarif, SecurityMetricsToolTagForRoslynSarif);
+                }
+            }
+        });
+
+    /// <summary>Tool tag emitted for each Roslyn per-(project,TFM) SARIF. Default <c>"roslyn"</c>.</summary>
+    protected virtual string SecurityMetricsToolTagForRoslynSarif => "roslyn";
+
+    /// <summary>Producer tag emitted for the SBOM. Default <c>"cyclonedx"</c> (matches the dotnet-CycloneDX path). Override to <c>"syft"</c> when <see cref="Sbom"/> has been swapped to Syft.</summary>
+    protected virtual string SecurityMetricsProducerTagForSbom => "cyclonedx";
+
     protected virtual Target Security => _ => _
-        .Description("End-to-end security chain: Sbom + SAST merge + SCA (osv) + Trivy secrets/misconfig + (env-gated) DT/DD push.")
-        .DependsOn(nameof(Sbom), nameof(SecurityScan), nameof(SecurityScanCveSbom), nameof(SecurityScanTrivy), nameof(SecurityPush));
+        .Description("End-to-end security chain: Sbom + SAST merge + SCA (osv) + Trivy secrets/misconfig + metrics emission + (env-gated) DT/DD push.")
+        .DependsOn(nameof(Sbom), nameof(SecurityScan), nameof(SecurityScanCveSbom), nameof(SecurityScanTrivy), nameof(SecurityMetrics), nameof(SecurityPush));
 }

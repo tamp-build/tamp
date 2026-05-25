@@ -41,5 +41,6 @@
     <Project Path="tests/Tamp.Analyzers.Tests/Tamp.Analyzers.Tests.csproj" />
     <Project Path="tests/Tamp.Sarif.Tests/Tamp.Sarif.Tests.csproj" />
     <Project Path="tests/Tamp.Sbom.Tests/Tamp.Sbom.Tests.csproj" />
+    <Project Path="tests/Tamp.Security.Pipeline.Tests/Tamp.Security.Pipeline.Tests.csproj" />
   </Folder>
 </Solution>

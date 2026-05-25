@@ -8,6 +8,23 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+## [1.13.0] — 2026-05-25 — Tamp.Security.Pipeline metrics emission
+
+### Added
+
+- **TAM-274 / TAM-275 — Security-pipeline OTel metrics.** New `SecurityPipelineMetrics` static class with its own meter (`Tamp.Security.Pipeline`, separate from the framework-level `Tamp.Build` meter per ADR-0018) carrying two counters:
+  - `tamp.security.scan.findings_count` — Counter<long>, unit `{findings}`. Tagged by `tool` (opengrep / roslyn / trivy / osvscanner / axecore / eslint / ...) and `severity` (none / note / warning / error per the SARIF level vocabulary). Emitted per (tool, severity) bucket after each scan.
+  - `tamp.security.sbom.components_count` — Counter<long>, unit `{components}`. Tagged by `producer` (cyclonedx / syft / ...) and `type` (library / application / framework / container / operating-system / device / firmware / file / data / machine-learning-model / cryptographic-asset / platform / device-driver — CycloneDX component-type vocabulary; unknown values pass through verbatim).
+- **`SecurityPipelineMetrics.EmitFindingsFromSarif(path, toolTag)`** — read a SARIF 2.1.0 file, group results by level, increment the counter per bucket. Missing files no-op silently; malformed files no-op with a stderr warning. Adopters who don't use the new `SecurityMetrics` target can call this directly from custom Targets.
+- **`SecurityPipelineMetrics.EmitComponentsFromBom(path, producerTag)`** — same shape for the BOM.
+- **`SecurityMetrics` Target** on `SecurityPipelineBuild` — depends on `Sbom` + every `SecurityScan*` target, reads the produced SARIF + BOM files, and emits all metrics in one pass. Added to the `Security` aggregate's `DependsOn` so it runs as part of `dotnet tamp Security`.
+- **`SecurityMetricsToolTagForRoslynSarif`** + **`SecurityMetricsProducerTagForSbom`** virtual properties on `SecurityPipelineBuild` — override when an adopter has swapped the upstream tool (e.g. set the producer tag to `"syft"` when the `Sbom` target was overridden to use `Tamp.Syft`).
+- New `tests/Tamp.Security.Pipeline.Tests/` project with 21 tests covering missing-file no-op, malformed-file warn-and-skip, multi-run aggregation, all severity / component-type buckets, custom-type passthrough, blank-type default fallback to `library`, and the public meter / counter name contract.
+
+### Consumer note
+
+The metrics flow through any OTel pipeline that subscribes to the `Tamp.Security.Pipeline` meter (or wildcard `Tamp.*`). First-party consumer: tamp.findings dashboard counter rings (per the tamp-ingest-v1 spec). tamp-beacon receives them transparently as part of its standard ADR-0018-compatible pipeline.
+
 ## [1.12.0] — 2026-05-25 — Hybrid split refactor: Wave 1+2 security wrappers move out to satellite repos
 
 The Wave 1+2 supply-chain security wrappers shipped from this monorepo at 1.11.x. Per the satellite-per-tool precedent established by `tamp-sonar` / `tamp-adjacent-container` / `tamp-azure-app-service` / etc., each wrapper's release cadence should track its wrapped tool independently of the framework's core release cycle. TAM-254 splits the six Wave 1+2 wrappers out into their own satellite repos. Adopters see no break — package IDs and version lines continue uninterrupted.
