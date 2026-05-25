@@ -137,6 +137,7 @@ The wiki's **[Module Catalog](https://github.com/tamp-build/tamp/wiki/Module-Cat
 - **Supply-chain security** — `Tamp.TruffleHog.V3`, `Tamp.CodeQL.V2`, `Tamp.Syft`, `Tamp.Grype`, `Tamp.SonarScanner.V10`, `Tamp.OpenGrep`, `Tamp.OsvScanner.V2`, `Tamp.Trivy`, `Tamp.CycloneDx.V6`, `Tamp.DependencyTrack.V1`, `Tamp.DefectDojo.V2`, `Tamp.Security.Pipeline`
 - **Source control + tracking** — `Tamp.GitHubCli.V2`, `Tamp.YouTrack`
 - **Foundation** — `Tamp.Http`, `Tamp.Sarif`, `Tamp.Sbom`, `Tamp.Templates.AspNet`
+- **Editor integration** — **[Tamp for VS Code](https://github.com/tamp-build/tamp-vscode)** (`.vsix` sideload from the repo's GitHub Releases; activity-bar targets tree, Run / Dry Run / View Plan, CodeLens, hover docs, run history)
 
 All satellites ship through Tamp itself — `dotnet tamp Ci && dotnet tamp Push` running in the satellite repo's CI, dogfooding the framework end-to-end. See any satellite's `build/Build.cs` and `.github/workflows/release.yml` for the pattern.
 
@@ -167,9 +168,9 @@ Today: `net8.0;net9.0;net10.0`. Full rationale incl. the federal / regulated VDI
 
 **v1.x — Ecosystem fill (current).** ADR backfill, per-satellite wiki pages, additional wrappers as adopters ask.
 
-**v2 — Adoption.** Schema-driven wrapper generation with AI-assisted bootstrapping from `--help` output. IDE integration (`tasks.json` / `launch.json` generation, MCP server mode). Migration guides from NUKE and Cake. Community module template.
+**v2 — Adoption.** Schema-driven wrapper generation with AI-assisted bootstrapping from `--help` output. JetBrains Fleet extension (`tamp-fleet`) — sibling to the VS Code extension, surfaces the same target tree + run actions inside Fleet. MCP server mode (`tamp :mcp-server`) exposing targets as callable tools. Migration guides from NUKE and Cake. Community module template.
 
-**Explicitly out of scope:** IDE plugins (generated `launch.json` covers VS Code + Rider's run-config import — enough). Distributed builds (Bazel-style remote execution is a different project). Build script DSLs (Tamp builds are .NET console projects, period).
+**Explicitly out of scope:** distributed builds (Bazel-style remote execution is a different project). Build script DSLs (Tamp builds are .NET console projects, period).
 
 ---
 
