@@ -29,9 +29,9 @@ What's different: Tamp's *architecture* is the resilience strategy. One small co
 
 ## Status
 
-**`Tamp.Core` 1.7.0** is the current public API; the `Tamp.*` NuGet prefix is reserved to the project ([nuget.org/profiles/tamp](https://www.nuget.org/profiles/tamp)). **50+ first-party satellite packages** are live and pin against core via standard `PackageReference`.
+**`Tamp.Core` 1.11.1** is the current public API; the `Tamp.*` NuGet prefix is reserved to the project ([nuget.org/profiles/tamp](https://www.nuget.org/profiles/tamp)). **50+ first-party satellite packages** are live and pin against core via standard `PackageReference`. The dogfood Release pipeline (3-OS × multi-TFM matrix, refuses to publish if the commit's CI hasn't passed) ships every satellite end-to-end through Tamp itself.
 
-Latest surface additions worth knowing: `Secret.Reveal()` is now `public` and gated by the TAMP004 analyzer; full TAMP001–TAMP006 analyzer family bundled with `Tamp.Core`; async `Executes(Func<Task>)` overloads; `tamp init` scaffolder for new adopters; object-init overloads on every wrapper.
+Latest surface additions worth knowing: full TAMP001–TAMP006 analyzer family bundled with `Tamp.Core` (1.9.0+); `Tamp.Polling.Until` async helper (1.10.0+); native filesystem surface on `AbsolutePath` (1.8.0+); `Secret.Reveal()` public + TAMP004-gated (1.6.0+); async `Executes(Func<Task>)` overloads (1.5.0+); `tamp init` scaffolder with `minimal` / `library` / `monorepo` templates; object-init overloads on every wrapper; ADR-0018 diagnostics emission contract (three `ActivitySource`s + the `Tamp.Build` `Meter`) feeding into `tamp-beacon` and downstream dashboards.
 
 ---
 
@@ -140,6 +140,17 @@ The wiki's **[Module Catalog](https://github.com/tamp-build/tamp/wiki/Module-Cat
 - **Editor integration** — **[Tamp for VS Code](https://github.com/tamp-build/tamp-vscode)** (`.vsix` sideload from the repo's GitHub Releases; activity-bar targets tree, Run / Dry Run / View Plan, CodeLens, hover docs, run history)
 
 All satellites ship through Tamp itself — `dotnet tamp Ci && dotnet tamp Push` running in the satellite repo's CI, dogfooding the framework end-to-end. See any satellite's `build/Build.cs` and `.github/workflows/release.yml` for the pattern.
+
+---
+
+## Downstream consumers — dashboards + observability
+
+Tamp builds emit a frozen diagnostics contract (ADR-0018): three `ActivitySource`s (`Tamp.Build` / `Tamp.Build.Targets` / `Tamp.Build.Commands`), one `Meter` (`Tamp.Build`) with counters and histograms covering builds / targets / commands / memory / outcomes. Any OTel-compatible receiver picks it up — and two first-party consumers ship as self-hostable images so you can stand up the whole observability + evidence stack without an SaaS dependency:
+
+- **[`tamp-beacon`](https://github.com/tamp-build/tamp-beacon)** — self-hosted OTLP receiver + dashboard. Ingests the ADR-0018 contract as-is, persists builds / targets / commands to bundled Postgres, surfaces a browser dashboard with queryable history, and pushes Web Push notifications on failure. Single Docker image, multi-arch (`linux/amd64` + `linux/arm64`). Just point your build's `OTEL_EXPORTER_OTLP_ENDPOINT` at it. Repo: [`tamp-build/tamp-beacon`](https://github.com/tamp-build/tamp-beacon).
+- **[`tamp-findings`](https://github.com/tamp-build/tamp-findings)** — security / quality dashboard with federal-readiness evidence. Ingests SARIF (via `/ingest/findings`), CycloneDX SBOMs, coverage reports, test results, SLSA / in-toto / DSSE provenance, and per-scanner receipts; scores each build against a configurable risk policy; produces CISA SSDF attestations, VEX, POA&M, KEV exposure tracking, and VDP metadata. Built on `Tamp.Security.Pipeline` and dogfooded on itself. Token-based ingest (`cli_` / `prj_` bearer tokens, SHA-256 hashed). The egress contract is published as the [**tamp-ingest-v1**](https://github.com/tamp-build/tamp-findings#tamp-ingest-v1) spec so other sinks can implement against the same shape. Repo: [`tamp-build/tamp-findings`](https://github.com/tamp-build/tamp-findings).
+
+If you build a different consumer (a defect tracker, an evidence vault, a CI insights surface) and want it to receive the same wrapper output without sink-specific glue, implement against the `tamp-ingest-v1` contract — the shape is stable and the producer side already exists.
 
 ---
 
