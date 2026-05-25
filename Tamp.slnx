@@ -26,12 +26,6 @@
     <Project Path="src/Tamp.Analyzers/Tamp.Analyzers.csproj" />
     <Project Path="src/Tamp.Sarif/Tamp.Sarif.csproj" />
     <Project Path="src/Tamp.Sbom/Tamp.Sbom.csproj" />
-    <Project Path="src/Tamp.DependencyTrack.V1/Tamp.DependencyTrack.V1.csproj" />
-    <Project Path="src/Tamp.DefectDojo.V2/Tamp.DefectDojo.V2.csproj" />
-    <Project Path="src/Tamp.CycloneDx.V6/Tamp.CycloneDx.V6.csproj" />
-    <Project Path="src/Tamp.OpenGrep/Tamp.OpenGrep.csproj" />
-    <Project Path="src/Tamp.OsvScanner.V2/Tamp.OsvScanner.V2.csproj" />
-    <Project Path="src/Tamp.Trivy/Tamp.Trivy.csproj" />
     <Project Path="src/Tamp.Security.Pipeline/Tamp.Security.Pipeline.csproj" />
   </Folder>
   <Folder Name="/build/">
@@ -47,11 +41,5 @@
     <Project Path="tests/Tamp.Analyzers.Tests/Tamp.Analyzers.Tests.csproj" />
     <Project Path="tests/Tamp.Sarif.Tests/Tamp.Sarif.Tests.csproj" />
     <Project Path="tests/Tamp.Sbom.Tests/Tamp.Sbom.Tests.csproj" />
-    <Project Path="tests/Tamp.DependencyTrack.V1.Tests/Tamp.DependencyTrack.V1.Tests.csproj" />
-    <Project Path="tests/Tamp.DefectDojo.V2.Tests/Tamp.DefectDojo.V2.Tests.csproj" />
-    <Project Path="tests/Tamp.CycloneDx.V6.Tests/Tamp.CycloneDx.V6.Tests.csproj" />
-    <Project Path="tests/Tamp.OpenGrep.Tests/Tamp.OpenGrep.Tests.csproj" />
-    <Project Path="tests/Tamp.OsvScanner.V2.Tests/Tamp.OsvScanner.V2.Tests.csproj" />
-    <Project Path="tests/Tamp.Trivy.Tests/Tamp.Trivy.Tests.csproj" />
   </Folder>
 </Solution>

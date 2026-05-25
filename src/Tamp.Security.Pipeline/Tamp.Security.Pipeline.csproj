@@ -13,16 +13,21 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- In-tree references — Core + contract packages + NetCli still live in this repo. -->
     <ProjectReference Include="..\Tamp.Core\Tamp.Core.csproj" />
     <ProjectReference Include="..\Tamp.Sarif\Tamp.Sarif.csproj" />
     <ProjectReference Include="..\Tamp.Sbom\Tamp.Sbom.csproj" />
-    <ProjectReference Include="..\Tamp.CycloneDx.V6\Tamp.CycloneDx.V6.csproj" />
-    <ProjectReference Include="..\Tamp.OpenGrep\Tamp.OpenGrep.csproj" />
-    <ProjectReference Include="..\Tamp.OsvScanner.V2\Tamp.OsvScanner.V2.csproj" />
-    <ProjectReference Include="..\Tamp.Trivy\Tamp.Trivy.csproj" />
-    <ProjectReference Include="..\Tamp.DependencyTrack.V1\Tamp.DependencyTrack.V1.csproj" />
-    <ProjectReference Include="..\Tamp.DefectDojo.V2\Tamp.DefectDojo.V2.csproj" />
     <ProjectReference Include="..\Tamp.NetCli.V10\Tamp.NetCli.V10.csproj" />
+
+    <!-- Cross-repo PackageReferences — security-chain wrappers split out to satellite
+         repos in TAM-254 (1.11.2). Versions pinned via Directory.Packages.props. -->
+    <PackageReference Include="Tamp.CycloneDx.V6" />
+    <PackageReference Include="Tamp.OpenGrep" />
+    <PackageReference Include="Tamp.OsvScanner.V2" />
+    <PackageReference Include="Tamp.Trivy" />
+    <PackageReference Include="Tamp.DependencyTrack.V1" />
+    <PackageReference Include="Tamp.DefectDojo.V2" />
+
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
   </ItemGroup>
 

@@ -17,8 +17,14 @@
     <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="8.0.0" />
   </ItemGroup>
 
-  <ItemGroup Label="Cross-repo Tamp packages (used by build script only — wrappers consumed from their satellite repos)">
+  <ItemGroup Label="Cross-repo Tamp packages — wrappers consumed from their own satellite repos. The Wave 1+2 security chain was split out of this monorepo in TAM-254; from 1.12.0 onward the security wrappers are PackageReferences from their satellites, and Tamp.Security.Pipeline references them the same way.">
     <PackageVersion Include="Tamp.SonarScanner.V10" Version="0.1.0" />
+    <PackageVersion Include="Tamp.CycloneDx.V6" Version="1.11.2" />
+    <PackageVersion Include="Tamp.OpenGrep" Version="1.11.2" />
+    <PackageVersion Include="Tamp.OsvScanner.V2" Version="1.11.2" />
+    <PackageVersion Include="Tamp.Trivy" Version="1.11.2" />
+    <PackageVersion Include="Tamp.DependencyTrack.V1" Version="1.11.2" />
+    <PackageVersion Include="Tamp.DefectDojo.V2" Version="1.11.2" />
   </ItemGroup>
 
   <ItemGroup Label="Core dependencies">

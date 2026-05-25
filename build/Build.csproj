@@ -24,29 +24,34 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- In-tree ProjectReferences — Core / NetCli / coverage / SARIF + SBOM contracts
+         all still live in this repo. Tamp.Security.Pipeline too — it's the meta-package
+         that orchestrates the chain, with PackageReferences to the satellite-shipped
+         scanners. -->
     <ProjectReference Include="..\src\Tamp.Core\Tamp.Core.csproj" />
     <ProjectReference Include="..\src\Tamp.NetCli.V10\Tamp.NetCli.V10.csproj" />
     <ProjectReference Include="..\src\Tamp.DotNetCoverage.V18\Tamp.DotNetCoverage.V18.csproj" />
-
-    <!-- Wave 1 security chain: dogfooded on every build that opts into
-         the Security target (TAM-245). -->
     <ProjectReference Include="..\src\Tamp.Sarif\Tamp.Sarif.csproj" />
     <ProjectReference Include="..\src\Tamp.Sbom\Tamp.Sbom.csproj" />
-    <ProjectReference Include="..\src\Tamp.CycloneDx.V6\Tamp.CycloneDx.V6.csproj" />
-    <ProjectReference Include="..\src\Tamp.OpenGrep\Tamp.OpenGrep.csproj" />
-    <ProjectReference Include="..\src\Tamp.DependencyTrack.V1\Tamp.DependencyTrack.V1.csproj" />
-    <ProjectReference Include="..\src\Tamp.DefectDojo.V2\Tamp.DefectDojo.V2.csproj" />
-    <ProjectReference Include="..\src\Tamp.OsvScanner.V2\Tamp.OsvScanner.V2.csproj" />
-    <ProjectReference Include="..\src\Tamp.Trivy\Tamp.Trivy.csproj" />
     <ProjectReference Include="..\src\Tamp.Security.Pipeline\Tamp.Security.Pipeline.csproj" />
 
-    <!--
-      Cross-repo PackageReference: Tamp.SonarScanner.V10 ships from
-      tamp-build/tamp-sonar. Pinned to 0.1.0, the first non-placeholder
-      release from the satellite dogfood pipeline. CPM-enabled via
-      Directory.Packages.props.
-    -->
+    <!-- Cross-repo PackageReferences. The Wave 1+2 security chain wrappers live in
+         their own satellite repos (TAM-254 split):
+           - tamp-cyclonedx       → Tamp.CycloneDx.V6
+           - tamp-opengrep        → Tamp.OpenGrep
+           - tamp-osv-scanner     → Tamp.OsvScanner.V2
+           - tamp-trivy           → Tamp.Trivy
+           - tamp-dependency-track→ Tamp.DependencyTrack.V1
+           - tamp-defectdojo      → Tamp.DefectDojo.V2
+         Plus tamp-sonar (Tamp.SonarScanner.V10). All pinned via
+         Directory.Packages.props. -->
     <PackageReference Include="Tamp.SonarScanner.V10" />
+    <PackageReference Include="Tamp.CycloneDx.V6" />
+    <PackageReference Include="Tamp.OpenGrep" />
+    <PackageReference Include="Tamp.OsvScanner.V2" />
+    <PackageReference Include="Tamp.Trivy" />
+    <PackageReference Include="Tamp.DependencyTrack.V1" />
+    <PackageReference Include="Tamp.DefectDojo.V2" />
   </ItemGroup>
 
 </Project>

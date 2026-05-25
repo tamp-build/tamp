@@ -8,6 +8,47 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+## [1.12.0] — 2026-05-25 — Hybrid split refactor: Wave 1+2 security wrappers move out to satellite repos
+
+The Wave 1+2 supply-chain security wrappers shipped from this monorepo at 1.11.x. Per the satellite-per-tool precedent established by `tamp-sonar` / `tamp-adjacent-container` / `tamp-azure-app-service` / etc., each wrapper's release cadence should track its wrapped tool independently of the framework's core release cycle. TAM-254 splits the six Wave 1+2 wrappers out into their own satellite repos. Adopters see no break — package IDs and version lines continue uninterrupted.
+
+### Moved (TAM-254)
+
+| Package | Was | Now ships from | First satellite release |
+|---|---|---|---|
+| `Tamp.CycloneDx.V6` | `tamp` / `src/Tamp.CycloneDx.V6` | [`tamp-build/tamp-cyclonedx`](https://github.com/tamp-build/tamp-cyclonedx) | 1.11.2 |
+| `Tamp.OpenGrep` | `tamp` / `src/Tamp.OpenGrep` | [`tamp-build/tamp-opengrep`](https://github.com/tamp-build/tamp-opengrep) | 1.11.2 |
+| `Tamp.OsvScanner.V2` | `tamp` / `src/Tamp.OsvScanner.V2` | [`tamp-build/tamp-osv-scanner`](https://github.com/tamp-build/tamp-osv-scanner) | 1.11.2 |
+| `Tamp.Trivy` | `tamp` / `src/Tamp.Trivy` | [`tamp-build/tamp-trivy`](https://github.com/tamp-build/tamp-trivy) | 1.11.2 |
+| `Tamp.DependencyTrack.V1` | `tamp` / `src/Tamp.DependencyTrack.V1` | [`tamp-build/tamp-dependency-track`](https://github.com/tamp-build/tamp-dependency-track) | 1.11.2 |
+| `Tamp.DefectDojo.V2` | `tamp` / `src/Tamp.DefectDojo.V2` | [`tamp-build/tamp-defectdojo`](https://github.com/tamp-build/tamp-defectdojo) | 1.11.2 |
+
+Source + tests + csproj surface copied verbatim at the 1.11.1 sha; satellite csprojs migrated from local `ProjectReference` to the standard `TampCoreMode={project|package}` conditional pattern. Each satellite's dogfood Release workflow (3-OS × multi-TFM matrix, `tamp Push` to nuget.org after CI green) is wired identically to the existing satellite pattern.
+
+### Changed in this repo
+
+- **`Tamp.Security.Pipeline`** — the six in-tree `ProjectReference`s for the moved packages are now `PackageReference`s pinned via `Directory.Packages.props` (`Tamp.CycloneDx.V6 1.11.2`, `Tamp.OpenGrep 1.11.2`, etc.). Adopters consume the meta-package the same way; under the hood it now pulls the wrappers transitively from their satellites.
+- **`build/Build.csproj`** — same flip. The dogfood `Security` target now exercises the wrappers via `PackageReference`, matching how external adopters consume them.
+- **`Tamp.slnx`** — dropped the six `src/` and six `tests/` projects (and the leftover empty `Tamp.Syft.V1` stub dirs that survived the 1.11.1 reconcile).
+
+### Why split now
+
+Three pressures:
+
+1. **Tool release cadences ≠ framework release cadence.** A `trivy` patch or an `osv-scanner` CLI surface tweak shouldn't require a Tamp.Core minor + a wave-coordinated re-release of every monorepo package. Each satellite ships on its tool's clock.
+2. **Adopter pinning.** Adopters who want to pin `Tamp.Trivy` to a specific minor while continuing to take Tamp.Core minors had no clean lever inside the monorepo. Independent NuGet versions per satellite resolve this.
+3. **Convention drift cost.** The Wave 1+2 packages were the only first-party wrappers still inside the monorepo. Every other satellite (50+) ships from its own repo. Bringing the security chain in line removes a special case from the architecture.
+
+### Stays in this repo (deliberate)
+
+- **`Tamp.Core` / `Tamp.Cli` / `dotnet-tamp` / `Tamp.NetCli.V{8,9,10}` / `Tamp.DotNetCoverage.V18` / `Tamp.Analyzers`** — the framework.
+- **`Tamp.Sarif` / `Tamp.Sbom`** — typed contract packages. Every security-chain producer + sink references one or both; keeping them in the framework repo lets contract evolution land atomically.
+- **`Tamp.Security.Pipeline`** — the meta-package that orchestrates the chain. It composes the satellite wrappers via `PackageReference`; its `SecurityPipelineBuild` base class is itself the cross-wrapper composition surface.
+
+### Adopter impact
+
+Zero break. Package IDs, namespaces, public APIs, and version lines are unchanged. Existing `<PackageReference Include="Tamp.CycloneDx.V6" Version="1.11.1" />` resolves transparently to the new satellite-published `1.11.2` on the next restore (NuGet's default min-version semantics).
+
 ## [1.11.1] — 2026-05-18 — Naming reconcile: drop duplicate `Tamp.Syft.V1`, rename `Tamp.OpenGrep.V1` → `Tamp.OpenGrep`
 
 A cross-org review after 1.11.0 surfaced that two of the eleven new packages collided with the established satellite conventions:
