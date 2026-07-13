@@ -32,6 +32,13 @@ The reference and guides live in the [Wiki ↗](https://github.com/tamp-build/ta
 - [CI Host Integrations](https://github.com/tamp-build/tamp/wiki/CI-Host-Integrations) — GitHub Actions, Azure DevOps, TeamCity
 - [Migrating from NUKE](https://github.com/tamp-build/tamp/wiki/Migrating-From-NUKE) · [Migrating from Cake](https://github.com/tamp-build/tamp/wiki/Migrating-From-Cake)
 
+## Security & compliance chain
+
+SBOM → SAST → SCA → secrets/misconfig → Dependency-Track / DefectDojo, in one import via `Tamp.Security.Pipeline`.
+
+- [Security chain](security-chain) — narrative, adopter recipe, locked decisions
+- [Security env vars](security-env-vars) — the `TAMP_<TOOL>_<FIELD>` contract
+
 ## Architecture decisions
 
 Every load-bearing design choice is recorded as an ADR. Read these before proposing a change to a corresponding area:
@@ -53,12 +60,17 @@ Every load-bearing design choice is recorded as an ADR. Read these before propos
 - [ADR 0015 — Target framework strategy](adr/0015-target-framework-strategy)
 - [ADR 0016 — Decision-maker silence within scope timeframe forfeits the right to weigh in](adr/0016-decision-silence-forfeits)
 - [ADR 0017 — Pull-request staleness: auto-close after author silence on review feedback](adr/0017-pr-staleness-autoclose)
+- [ADR 0018 — Diagnostics emission contract](adr/0018-diagnostics-emission-contract)
 
 → [Full ADR index](adr/)
 
+**Proposing a change?** Anyone may open an ADR via PR with `Status: Proposed` — see [ADR 0009 §3.1](adr/0009-governance-and-namespace-policy). No CLA.
+
 ## Releases
 
-`Tamp.Core 1.2.0` is live, the `Tamp.*` NuGet prefix is reserved to the project, and 23 satellite packages are shipping. See the [changelog ↗](https://github.com/tamp-build/tamp/blob/main/CHANGELOG.md) and the [main README ↗](https://github.com/tamp-build/tamp#readme) for the current package matrix.
+`Tamp.Core 1.13.0` is live, the `Tamp.*` NuGet prefix is reserved to the project, and 70+ first-party packages are shipping. See the [changelog ↗](https://github.com/tamp-build/tamp/blob/main/CHANGELOG.md) and the [main README ↗](https://github.com/tamp-build/tamp#readme) for the current package matrix.
+
+Tamp is actively maintained and in daily production use across several private client projects. Current focus: **reporting and attestation**.
 
 ## Project meta
 
