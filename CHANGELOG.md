@@ -8,6 +8,26 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+## [1.14.0] — 2026-08-21 — Tamp.Sarif: dynamic-analysis fields
+
+### Added
+
+- **TAM-279 — SARIF members that carry a dynamic scan's payload.** `Tamp.Sarif`'s model was minimal enough that a DAST log arrived stripped to rule + severity + message + URI. New optional members on the existing records:
+  - `result.webRequest` / `result.webResponse` (`SarifWebRequest` / `SarifWebResponse`) — protocol, version, method, target, headers, parameters, body, status code, reason phrase. The HTTP exchange is the single most actionable thing a dynamic scanner emits and had nowhere to land.
+  - `result.properties` and `reportingDescriptor.properties` (`SarifPropertyBag`) — `tags` is modelled explicitly; every other member is preserved through `[JsonExtensionData]` so tool-specific payloads (a scanner's attack string, a confidence rating) survive a read/write round trip instead of being dropped.
+  - `region.snippet` (`SarifArtifactContent`) plus `byteOffset` / `byteLength`.
+  - `run.taxonomies`, `toolComponent.taxa`, `reportingDescriptor.relationships`, `result.taxa` (`SarifReportingDescriptorReference`, `SarifToolComponentReference`, `SarifReportingDescriptorRelationship`) — CWE classification, by either the rule-relationship or the direct result-taxa route.
+  - `result.partialFingerprints` / `result.fingerprints`.
+- 13 tests (`SarifDastFieldsTests`) against a fragment shaped like real ZAP output, covering parse, extension-data preservation, and full-document round trip.
+
+### Notes
+
+- **Two of these help static analysis too.** `region.snippet` has been a known gap — downstream mappers hardcode `Snippet = null` and cite this model, which weakens cross-build dedup for every SARIF scanner. And `reportingDescriptor.properties` carries the `tags` array Trivy uses to separate vulnerability / misconfiguration / secret findings under one tool name; consumers have been inferring that from rule-id prefixes.
+- **Dedup semantics are unchanged.** Adopting `partialFingerprints` as the identity would alter collapsing behaviour for every tool that emits them (CodeQL does) — a separate, opt-in decision. A test pins the current key composition.
+- **`SarifPropertyBag.AdditionalProperties` is `set`, not `init`**, unlike every other member in the schema. System.Text.Json binds init-only members through the record's deserialisation constructor, and an extension-data property cannot bind to a constructor parameter — it throws at serializer-configuration time and takes down parsing of the entire log. Documented at the property.
+- Every new member is optional; a static scanner's log still round-trips byte-identically, which is asserted.
+
+
 ## [1.13.0] — 2026-05-25 — Tamp.Security.Pipeline metrics emission
 
 ### Added
