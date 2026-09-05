@@ -189,6 +189,63 @@ public sealed class DotNetTests
         Assert.Equal("45000ms", args[IndexOf(args, "--blame-hang-timeout") + 1]);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Test_BlameCrash_Flag_Does_Not_Require_A_Dump_Type(bool enabled)
+    {
+        var args = DotNet.Test(s => s.SetBlameCrash(enabled)).Arguments;
+        Assert.Equal(enabled, args.Contains("--blame-crash"));
+        Assert.DoesNotContain("--blame-crash-dump-type", args);
+    }
+
+    [Theory]
+    [InlineData(DotNetCrashDumpType.Mini, "mini")]
+    [InlineData(DotNetCrashDumpType.Full, "full")]
+    public void Test_BlameCrash_Emits_Requested_Dump_Alongside_Hang_Diagnostics(
+        DotNetCrashDumpType dumpType, string token)
+    {
+        var plan = DotNet.Test(s => s.SetBlameCrash(true).SetBlameCrashDumpType(dumpType)
+            .SetBlameHang(true).SetBlameHangTimeout(TimeSpan.FromSeconds(45)));
+        var args = plan.Arguments;
+        Assert.Contains("--blame-crash", args);
+        Assert.Equal(token, args[IndexOf(args, "--blame-crash-dump-type") + 1]);
+        Assert.Contains("--blame-hang", args);
+        Assert.Equal("45000ms", args[IndexOf(args, "--blame-hang-timeout") + 1]);
+    }
+
+    [Fact]
+    public void Test_BlameCrash_Defaults_And_Reset_Omit_Crash_Flags()
+    {
+        Assert.DoesNotContain("--blame-crash", DotNet.Test().Arguments);
+        Assert.DoesNotContain("--blame-crash-dump-type", DotNet.Test().Arguments);
+        var plan = DotNet.Test(s => s.SetBlameCrash(true).SetBlameCrashDumpType(DotNetCrashDumpType.Mini)
+            .SetBlameCrash(false).SetBlameCrashDumpType(null));
+        Assert.DoesNotContain("--blame-crash", plan.Arguments);
+        Assert.DoesNotContain("--blame-crash-dump-type", plan.Arguments);
+    }
+
+    [Fact]
+    public void Test_Crash_Dump_Type_Can_Be_Used_Without_Explicit_Blame_Flag()
+    {
+        var settings = new DotNetTestSettings { BlameCrashDumpType = DotNetCrashDumpType.Mini };
+        var args = settings.ToCommandPlan().Arguments;
+        Assert.Equal("mini", args[IndexOf(args, "--blame-crash-dump-type") + 1]);
+        Assert.DoesNotContain("--blame-crash", args); // VSTest implies it from dump type.
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(2)]
+    [InlineData(int.MaxValue)]
+    public void Test_Invalid_Crash_Dump_Type_Is_Rejected_Before_It_Becomes_State(int value)
+    {
+        var settings = new DotNetTestSettings { BlameCrashDumpType = DotNetCrashDumpType.Full };
+        Assert.Throws<ArgumentOutOfRangeException>(() => settings.BlameCrashDumpType = (DotNetCrashDumpType)value);
+        Assert.Throws<ArgumentOutOfRangeException>(() => settings.SetBlameCrashDumpType((DotNetCrashDumpType)value));
+        Assert.Equal(DotNetCrashDumpType.Full, settings.BlameCrashDumpType);
+    }
+
     // ---- Pack ----
 
     [Fact]
