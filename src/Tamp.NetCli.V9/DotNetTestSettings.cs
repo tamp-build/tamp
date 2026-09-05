@@ -1,5 +1,14 @@
 namespace Tamp.NetCli.V9;
 
+/// <summary>Crash dump sizes accepted by VSTest's <c>--blame-crash-dump-type</c>.</summary>
+public enum DotNetCrashDumpType
+{
+    /// <summary>Collect a small crash dump.</summary>
+    Mini,
+    /// <summary>Collect a full crash dump.</summary>
+    Full,
+}
+
 public sealed class DotNetTestSettings : DotNetSettingsBase
 {
     public Configuration? Configuration { get; set; }
@@ -12,6 +21,22 @@ public sealed class DotNetTestSettings : DotNetSettingsBase
     public string? Settings { get; set; }
     public string? Runtime { get; set; }
     public string? Framework { get; set; }
+    /// <summary>Collect crash diagnostics when the VSTest test host exits unexpectedly.</summary>
+    public bool BlameCrash { get; set; }
+
+    private DotNetCrashDumpType? _blameCrashDumpType;
+    /// <summary>Crash dump size. Null uses the CLI default; specifying a size implies crash diagnostics.</summary>
+    public DotNetCrashDumpType? BlameCrashDumpType
+    {
+        get => _blameCrashDumpType;
+        set
+        {
+            if (value is { } type && !Enum.IsDefined(type))
+                throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported crash dump type.");
+            _blameCrashDumpType = value;
+        }
+    }
+
     public bool BlameHang { get; set; }
     public TimeSpan? BlameHangTimeout { get; set; }
     public Dictionary<string, string> Properties { get; } = new();
@@ -36,6 +61,10 @@ public sealed class DotNetTestSettings : DotNetSettingsBase
     public DotNetTestSettings SetSettings(string? path) { Settings = path; return this; }
     public DotNetTestSettings SetRuntime(string? runtime) { Runtime = runtime; return this; }
     public DotNetTestSettings SetFramework(string? tfm) { Framework = tfm; return this; }
+    /// <summary>Enable or disable VSTest crash diagnostics.</summary>
+    public DotNetTestSettings SetBlameCrash(bool v) { BlameCrash = v; return this; }
+    /// <summary>Set the crash dump size, or null to omit the dump-type flag.</summary>
+    public DotNetTestSettings SetBlameCrashDumpType(DotNetCrashDumpType? v) { BlameCrashDumpType = v; return this; }
     public DotNetTestSettings SetBlameHang(bool v) { BlameHang = v; return this; }
     public DotNetTestSettings SetBlameHangTimeout(TimeSpan? t) { BlameHangTimeout = t; return this; }
     public DotNetTestSettings SetProperty(string name, string value) { Properties[name] = value; return this; }
@@ -57,6 +86,12 @@ public sealed class DotNetTestSettings : DotNetSettingsBase
         if (!string.IsNullOrEmpty(Settings)) { yield return "--settings"; yield return Settings!; }
         if (!string.IsNullOrEmpty(Runtime)) { yield return "--runtime"; yield return Runtime!; }
         if (!string.IsNullOrEmpty(Framework)) { yield return "--framework"; yield return Framework!; }
+        if (BlameCrash) yield return "--blame-crash";
+        if (BlameCrashDumpType is { } dumpType)
+        {
+            yield return "--blame-crash-dump-type";
+            yield return dumpType.ToString().ToLowerInvariant();
+        }
         if (BlameHang) yield return "--blame-hang";
         if (BlameHangTimeout is { } t) { yield return "--blame-hang-timeout"; yield return $"{(int)t.TotalMilliseconds}ms"; }
         foreach (var (k, v) in Properties)

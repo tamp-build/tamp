@@ -133,6 +133,7 @@ Full rationale: [ADR 0002 — Package naming convention](docs/adr/0002-package-n
 The wiki's **[Module Catalog](https://github.com/tamp-build/tamp/wiki/Module-Catalog)** is the canonical reference for every published `Tamp.*` package — what it wraps, latest version, and source repo. Categories include:
 
 - **.NET toolchain** — `Tamp.NetCli.V8/9/10`, `Tamp.EFCore.V8/9/10`, `Tamp.Coverlet.V6`, `Tamp.ReportGenerator.V5`, `Tamp.DotNetCoverage.V18`, `Tamp.GitVersion.V6`
+  See [test-host crash diagnostics](docs/dotnet-test-diagnostics.md) for typed VSTest crash-dump options.
 - **Containers + cluster ops** — `Tamp.Docker.V27`, `Tamp.Helm.V3`, `Tamp.Kubectl`, `Tamp.Sccache`, `Tamp.AdjacentContainer(.Local/.Provisioning)`, `Tamp.Testcontainers.V4`
 - **JavaScript / TypeScript** — `Tamp.Yarn.V4`, `Tamp.Npm.V10`, `Tamp.Turbo.V2`, `Tamp.Vite.V5`, `Tamp.Playwright.V1`, `Tamp.GraphQLCodegen.V5`, `Tamp.Eslint.V9`
 - **Rust + desktop ship chain** — `Tamp.Cargo`, `Tamp.Tauri.V2`, `Tamp.Msix`, `Tamp.MicrosoftStoreCli`
