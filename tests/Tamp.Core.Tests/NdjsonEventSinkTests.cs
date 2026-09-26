@@ -11,7 +11,7 @@ namespace Tamp.Core.Tests;
 /// resolution, and the separate-channel guarantee (events to the file, human
 /// console untouched on stdout).
 /// </summary>
-[Collection("ConsoleRedirect")]
+[Collection(nameof(ConsoleCaptureCollection))]
 public sealed class NdjsonEventSinkTests
 {
     private static BuildEvent SampleEvent(string type, long seq) => new()

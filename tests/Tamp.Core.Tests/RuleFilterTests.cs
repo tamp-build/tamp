@@ -8,7 +8,7 @@ namespace Tamp.Core.Tests;
 /// <see cref="TampBuild.RuleFilter"/>, and its integration into `remedy.reproduce`
 /// (echo active filters, else infer a single error-level diagnostic rule).
 /// </summary>
-[Collection("ConsoleRedirect")]
+[Collection(nameof(ConsoleCaptureCollection))]
 public sealed class RuleFilterTests
 {
     private sealed class CapturingSink : IBuildEventSink

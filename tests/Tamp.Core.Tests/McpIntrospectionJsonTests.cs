@@ -9,7 +9,7 @@ namespace Tamp.Core.Tests;
 /// catalog (`--list --format json`) now carries `produces` + `capability`, and
 /// `--plan --format json` emits the resolved execution order.
 /// </summary>
-[Collection("ConsoleRedirect")]
+[Collection(nameof(ConsoleCaptureCollection))]
 public sealed class McpIntrospectionJsonTests
 {
     private sealed class TB : TampBuild
