@@ -142,7 +142,7 @@ public sealed class FromPathFieldShadowingAnalyzer : DiagnosticAnalyzer
 /// Shared shadowing-detection helper used by TAMP005 (field shadowing) and
 /// TAMP006 (Target-property shadowing). Walks the syntax tree's
 /// using-imported namespaces and returns the first public static class
-/// matching <paramref name="memberName"/>, or <c>null</c>.
+/// matching the requested member name, or <c>null</c>.
 /// </summary>
 internal static class FacadeClassShadowing
 {

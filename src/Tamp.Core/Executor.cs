@@ -13,7 +13,7 @@ namespace Tamp;
 /// The executor honors <see cref="ITargetDefinition.OnlyWhen"/> conditions,
 /// <see cref="ITargetDefinition.Requires"/> hard preconditions,
 /// <see cref="ITargetDefinition.AssuredAfterFailure"/> cleanup semantics,
-/// and <see cref="ITargetDefinition.OnFailureOf"/> failure handlers.
+/// and <see cref="ITargetDefinition.OnFailureOf(string[])"/> failure handlers.
 ///
 /// On a target failure, the executor:
 /// <list type="number">

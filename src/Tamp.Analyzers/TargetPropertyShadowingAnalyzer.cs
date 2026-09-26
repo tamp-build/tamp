@@ -8,7 +8,7 @@ using Microsoft.CodeAnalysis.Diagnostics;
 namespace Tamp.Analyzers;
 
 /// <summary>
-/// TAMP006 — flags <see cref="Target"/>-typed properties whose name shadows
+/// TAMP006 — flags <c>Target</c>-typed properties whose name shadows
 /// a same-named public static class in any imported namespace. Sibling of
 /// TAMP005 (field shadowing); same root cause, different syntactic surface.
 /// </summary>

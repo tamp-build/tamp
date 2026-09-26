@@ -10,6 +10,12 @@
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     <NeutralLanguage>en-US</NeutralLanguage>
+    <!--
+      #3: XML documentation is generated for the packable projects under src/ (see
+      src/Directory.Build.props) so it ships next to each .dll in the nupkg. CS1591
+      (missing doc comment on a public member) is suppressed — docs ship where they
+      exist; a missing comment is not a build error under TreatWarningsAsErrors.
+    -->
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 

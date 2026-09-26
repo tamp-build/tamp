@@ -190,7 +190,7 @@ public interface ITargetDefinition
     /// <summary>
     /// Marks the target as cleanup that should always run, even after
     /// earlier targets in the plan have failed. Distinct from
-    /// <see cref="OnFailureOf"/>: OnFailureOf is conditional on a specific
+    /// <see cref="OnFailureOf(string[])"/>: OnFailureOf is conditional on a specific
     /// target failing, AssuredAfterFailure is unconditional — the target
     /// runs whether the build succeeded or failed, as long as it appears
     /// in the plan.
@@ -264,7 +264,7 @@ public interface ITargetDefinition
     /// </code>
     /// <para>
     /// Or chain multiple <c>.Executes(...)</c> calls instead of putting them in one block.
-    /// The <see cref="Tamp.Core"/> analyzer (rule <c>TAMP001</c>) emits a compile-time warning
+    /// The Tamp analyzer (rule <c>TAMP001</c>) emits a compile-time warning
     /// when this overload's body contains unobserved <see cref="CommandPlan"/> return values.
     /// </para>
     /// </remarks>
