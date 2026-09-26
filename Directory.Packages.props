@@ -31,8 +31,13 @@
     <PackageVersion Include="Tamp.DefectDojo.V2" Version="1.11.2" />
   </ItemGroup>
 
+  <ItemGroup Label="MCP control surface (#22) — tamp mcp server">
+    <PackageVersion Include="ModelContextProtocol" Version="2.2.0" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+  </ItemGroup>
+
   <ItemGroup Label="Core dependencies">
-    <PackageVersion Include="Microsoft.Extensions.FileSystemGlobbing" Version="9.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.FileSystemGlobbing" Version="10.0.0" />
   </ItemGroup>
 
   <ItemGroup Label="Analyzer (TAM-175 part a)">

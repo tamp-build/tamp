@@ -39,6 +39,19 @@ internal static class Program
             return InitCommand.Run(initArgs);
         }
 
+        // `tamp mcp` (#22) — start the MCP control-surface server over stdio. It introspects
+        // and drives the build project (found the same way as normal dispatch).
+        if (args.Length > 0 && args[0] == "mcp")
+        {
+            var mcpBuildProject = BuildProjectLocator.Locate(Environment.CurrentDirectory);
+            if (mcpBuildProject is null)
+            {
+                Console.Error.WriteLine("tamp: no build project found for the mcp server.");
+                return ExitNoBuildProject;
+            }
+            return Mcp.TampMcpServer.RunAsync(mcpBuildProject).GetAwaiter().GetResult();
+        }
+
         var cwd = Environment.CurrentDirectory;
         var buildProject = BuildProjectLocator.Locate(cwd);
         if (buildProject is null)
@@ -97,6 +110,7 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("USAGE:");
         Console.WriteLine("  dotnet tamp init [--solution <path>] [--dry-run]    scaffold Build.cs into the current dir");
+        Console.WriteLine("  dotnet tamp mcp                                     start the MCP control-surface server (stdio)");
         Console.WriteLine("  dotnet tamp <target> [--dry-run | --plan | --list | --list-tree] [--<param> <value>]");
         Console.WriteLine("  dotnet tamp --version | --help");
         Console.WriteLine();
