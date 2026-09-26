@@ -37,6 +37,20 @@ public static class BuildEvents
         });
     }
 
+    /// <summary>Emit an <c>artifact.produced</c> event. No-op if inactive. (The framework also synthesizes these from a target's <c>Produces</c> globs; this is for explicit/incremental announcements from target code.)</summary>
+    public static void Artifact(string path, string? hash = null, string? kind = null, long? sizeBytes = null)
+    {
+        var scope = Current.Value;
+        if (scope is null) return;
+        scope.Emit(BuildEventTypes.ArtifactProduced, new ArtifactProducedPayload
+        {
+            Path = path,
+            Hash = hash,
+            Kind = kind,
+            SizeBytes = sizeBytes,
+        });
+    }
+
     /// <summary>Activate <paramref name="scope"/> for the current async flow; dispose restores the prior scope. Executor-internal.</summary>
     internal static IDisposable Activate(BuildEventScope scope)
     {

@@ -104,6 +104,102 @@ public sealed class Executor
     private IReadOnlyList<string> RedactedTail(TargetOutputBuffer buffer)
         => buffer.Drain().Select(l => _redactionTable.Redact(l)).ToArray();
 
+    // ── #12 typed-result synthesis ──────────────────────────────────────────
+
+    /// <summary>Emit a success target.finished with synthesized Outputs (from Produces globs) + InputsHash, plus one artifact.produced per output.</summary>
+    private void EmitTargetSuccess(TargetSpec spec, string targetSpanId, TimeSpan elapsed)
+    {
+        var outputs = SynthesizeOutputs(spec);
+        if (outputs is { Count: > 0 })
+            foreach (var a in outputs)
+                Emit(BuildEventTypes.ArtifactProduced, spec.Name, NewSpanId(), targetSpanId,
+                    new ArtifactProducedPayload { Path = a.Path, Hash = a.Hash, Kind = a.Kind, SizeBytes = a.SizeBytes });
+
+        Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
+            new TargetFinishedPayload
+            {
+                Target = spec.Name,
+                Status = BuildEventStatus.Success,
+                DurationMs = elapsed.TotalMilliseconds,
+                Outputs = outputs,
+                InputsHash = SafeInputsHash(spec),
+            });
+    }
+
+    /// <summary>Emit a failure target.finished with a structured remedy (reproduce + hint + coarse class) and InputsHash.</summary>
+    private void EmitTargetFailure(TargetSpec spec, string targetSpanId, TimeSpan elapsed, string reason, bool isRequiresFailure, IReadOnlyList<string>? outputTail)
+        => Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
+            new TargetFinishedPayload
+            {
+                Target = spec.Name,
+                Status = BuildEventStatus.Failure,
+                DurationMs = elapsed.TotalMilliseconds,
+                Reason = reason,
+                OutputTail = outputTail,
+                InputsHash = SafeInputsHash(spec),
+                Remedy = new TargetRemedy
+                {
+                    Class = isRequiresFailure ? "config" : "code",
+                    Reproduce = $"tamp {spec.Name}",
+                    Hint = reason,
+                },
+            });
+
+    /// <summary>The target's input hash when it declared one; observability-only (#17 migration primitive). Null / best-effort otherwise.</summary>
+    private static string? SafeInputsHash(TargetSpec spec)
+    {
+        if (spec.InputHashProducer is null) return null;
+        try { return spec.InputHashProducer(); } catch { return null; }
+    }
+
+    /// <summary>Glob the target's Produces patterns (relative to the worktree), hashing each file. Null when the target declares none.</summary>
+    private static IReadOnlyList<ArtifactInfo>? SynthesizeOutputs(TargetSpec spec)
+    {
+        if (spec.ProducedGlobs.Count == 0) return null;
+        var infos = new List<ArtifactInfo>();
+        foreach (var glob in spec.ProducedGlobs)
+        {
+            foreach (var file in TampBuild.RootDirectory.GlobFiles(glob))
+            {
+                if (!file.FileExists()) continue;
+                string? hash = null;
+                long? size = null;
+                try
+                {
+                    var bytes = File.ReadAllBytes(file.Value);
+                    hash = "sha256:" + Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+                    size = bytes.LongLength;
+                }
+                catch { /* unreadable file — still report path + kind */ }
+                infos.Add(new ArtifactInfo
+                {
+                    Path = RelativeToRoot(file),
+                    Hash = hash,
+                    SizeBytes = size,
+                    Kind = InferKind(file.Extension),
+                });
+            }
+        }
+        return infos;
+    }
+
+    private static string RelativeToRoot(AbsolutePath file)
+    {
+        try { return Path.GetRelativePath(TampBuild.RootDirectory.Value, file.Value).Replace('\\', '/'); }
+        catch { return file.Value; }
+    }
+
+    private static string InferKind(string extension) => extension.ToLowerInvariant() switch
+    {
+        ".dll" or ".exe" => "assembly",
+        ".nupkg" or ".snupkg" => "package",
+        ".sarif" => "sarif",
+        ".json" => "json",
+        ".xml" => "xml",
+        ".zip" or ".tar" or ".gz" or ".tgz" => "archive",
+        _ => "file",
+    };
+
     /// <summary>Emit one canonical <see cref="BuildEvent"/> to the fan-out sink.</summary>
     private void Emit(string type, string? targetId, string spanId, string? parentSpanId, BuildEventPayload payload)
         => _sink.Emit(new BuildEvent
@@ -348,14 +444,7 @@ public sealed class Executor
             if (CheckRequirementsFailed(spec) is { } reqFail)
             {
                 _log.WriteRaw($"==> {spec.Name} REQUIRES failed: {reqFail}");
-                Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
-                    new TargetFinishedPayload
-                    {
-                        Target = spec.Name,
-                        Status = BuildEventStatus.Failure,
-                        DurationMs = 0,
-                        Reason = $"Requires failed: {reqFail}",
-                    });
+                EmitTargetFailure(spec, targetSpanId, TimeSpan.Zero, $"Requires failed: {reqFail}", isRequiresFailure: true, outputTail: null);
                 records.Add(TargetExecutionRecord.Failed(spec.Name, TimeSpan.Zero, $"Requires failed: {reqFail}"));
                 if (!buildFailedAt.HasValue)
                 {
@@ -448,15 +537,7 @@ public sealed class Executor
                             if (spec.FailureMode == FailureMode.Continue) continue;
                             sw.Stop();
                             capturingOutput.FlushPendingLine();
-                            Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
-                                new TargetFinishedPayload
-                                {
-                                    Target = spec.Name,
-                                    Status = BuildEventStatus.Failure,
-                                    DurationMs = sw.Elapsed.TotalMilliseconds,
-                                    Reason = $"exit {exit}",
-                                    OutputTail = RedactedTail(outputBuffer),
-                                });
+                            EmitTargetFailure(spec, targetSpanId, sw.Elapsed, $"exit {exit}", isRequiresFailure: false, outputTail: RedactedTail(outputBuffer));
                             records.Add(TargetExecutionRecord.Failed(spec.Name, sw.Elapsed, $"exit {exit}"));
                             DiagnosticsProjection.AnnotateTargetTerminal(targetSpan, spec, new TargetTerminalTelemetry(sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeFailure, $"exit {exit}"));
                             if (!buildFailedAt.HasValue)
@@ -470,8 +551,7 @@ public sealed class Executor
                 }
 
                 sw.Stop();
-                Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
-                    new TargetFinishedPayload { Target = spec.Name, Status = BuildEventStatus.Success, DurationMs = sw.Elapsed.TotalMilliseconds });
+                EmitTargetSuccess(spec, targetSpanId, sw.Elapsed);
                 records.Add(TargetExecutionRecord.Done(spec.Name, sw.Elapsed));
                 DiagnosticsProjection.AnnotateTargetTerminal(targetSpan, spec, new TargetTerminalTelemetry(sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeSuccess, null));
             }
@@ -479,8 +559,7 @@ public sealed class Executor
             {
                 sw.Stop();
                 _log.WriteRaw($"==> {spec.Name} threw {ex.GetType().Name}; continuing per FailureMode.Continue: {ex.Message}");
-                Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
-                    new TargetFinishedPayload { Target = spec.Name, Status = BuildEventStatus.Success, DurationMs = sw.Elapsed.TotalMilliseconds });
+                EmitTargetSuccess(spec, targetSpanId, sw.Elapsed);
                 records.Add(TargetExecutionRecord.Done(spec.Name, sw.Elapsed));
                 DiagnosticsProjection.AnnotateTargetTerminal(targetSpan, spec, new TargetTerminalTelemetry(sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeSuccess, null));
             }
@@ -489,15 +568,7 @@ public sealed class Executor
                 sw.Stop();
                 _log.WriteRaw($"==> {spec.Name} threw {ex.GetType().Name}: {ex.Message}");
                 capturingOutput.FlushPendingLine();
-                Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
-                    new TargetFinishedPayload
-                    {
-                        Target = spec.Name,
-                        Status = BuildEventStatus.Failure,
-                        DurationMs = sw.Elapsed.TotalMilliseconds,
-                        Reason = $"{ex.GetType().Name}: {ex.Message}",
-                        OutputTail = RedactedTail(outputBuffer),
-                    });
+                EmitTargetFailure(spec, targetSpanId, sw.Elapsed, $"{ex.GetType().Name}: {ex.Message}", isRequiresFailure: false, outputTail: RedactedTail(outputBuffer));
                 records.Add(TargetExecutionRecord.Failed(spec.Name, sw.Elapsed, ex.Message));
                 DiagnosticsProjection.AnnotateTargetTerminal(targetSpan, spec, new TargetTerminalTelemetry(sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeFailure, $"{ex.GetType().Name}: {ex.Message}"));
                 if (!buildFailedAt.HasValue)
