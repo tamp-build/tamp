@@ -205,14 +205,15 @@ public sealed class TampBuildScratchTests : IDisposable
     }
 
     [Fact]
-    public void Scratch_Dirs_Are_Under_System_Temp_Root()
+    public void Scratch_Dirs_Are_Under_The_Worktree_Not_System_Temp()
     {
+        // #14: scratch is worktree-local (RootDirectory/.tamp/temp), NOT the shared OS
+        // temp root — so parallel workers in separate worktrees never share a scratch root.
         var b = new ScratchExposingBuild();
         var dir = b.MakeScratch();
         try
         {
-            var tempRoot = AbsolutePath.GetTempDirectoryRoot().Value;
-            Assert.StartsWith(tempRoot, dir.Value);
+            Assert.StartsWith(TampBuild.TemporaryDirectory.Value, dir.Value);
         }
         finally
         {

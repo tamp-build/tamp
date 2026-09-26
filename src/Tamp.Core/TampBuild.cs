@@ -69,18 +69,23 @@ public abstract partial class TampBuild
     /// </summary>
     /// <param name="namePrefix">
     /// Optional prefix for the directory name. Defaults to <c>tamp-scratch</c>.
-    /// Useful for grepping <c>/tmp</c> when <c>TAMP_KEEP_SCRATCH=1</c> is set.
+    /// Useful for grepping <c>.tamp/temp</c> when <c>TAMP_KEEP_SCRATCH=1</c> is set.
     /// </param>
     /// <remarks>
     /// Set <c>TAMP_KEEP_SCRATCH=1</c> in the environment to preserve scratch
     /// directories after the build exits — useful for post-mortem inspection
     /// of intermediate artifacts. Default is "delete, including on failure"
-    /// so a flaky build doesn't slowly fill <c>/tmp</c>.
+    /// so a flaky build doesn't slowly fill <c>.tamp/temp</c>.
     /// </remarks>
     protected AbsolutePath Scratch(string? namePrefix = null)
     {
         var prefix = string.IsNullOrWhiteSpace(namePrefix) ? "tamp-scratch" : namePrefix.Trim();
-        var dir = AbsolutePath.CreateTempDirectory(prefix);
+        // TAM-#14: scratch lives UNDER the worktree (RootDirectory/.tamp/temp), not the
+        // shared OS temp root — so parallel workers in separate worktrees never share a
+        // scratch root, and per-build cleanup stays inside the repo. The GUID keeps
+        // concurrent allocations (even within one worktree / run) unique. Adopters who
+        // genuinely want the OS temp root can call AbsolutePath.CreateTempDirectory.
+        var dir = (TemporaryDirectory / $"{prefix}-{Guid.NewGuid():N}").EnsureDirectoryExists();
         lock (_scratchDirs) _scratchDirs.Add(dir);
         return dir;
     }
