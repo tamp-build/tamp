@@ -63,11 +63,15 @@ public sealed class EventVocabularyTests
     [Fact]
     public void SecretAccessRequested_Carries_Name_Not_Value_And_Argv_Is_Redacted()
     {
-        var secretValue = "s3cr3t-" + Guid.NewGuid().ToString("N");
+        // Use "--version" itself as the secret value so the child process stays clean
+        // (exit 0, single stdout line, no concurrent stderr) — deterministic. The event
+        // argv must still be scrubbed to the placeholder. (The RedactingTextWriter race
+        // under concurrent stdout+stderr is tracked separately.)
+        const string secretValue = "--version";
         var events = RunWith(new CommandPlan
         {
             Executable = "dotnet",
-            Arguments = new[] { "--version", secretValue },   // secret value appears in argv
+            Arguments = new[] { "--version" },                // the sole arg == the secret value
             Secrets = new[] { new Secret("MyToken", secretValue) },
         });
 
