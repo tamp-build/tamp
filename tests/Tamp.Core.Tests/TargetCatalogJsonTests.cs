@@ -10,7 +10,7 @@ namespace Tamp.Core.Tests;
 /// parameters[]. Verifies field names match the IDE-extension contract
 /// in the filed ticket.
 /// </summary>
-[Collection("ConsoleRedirect")]
+[Collection(nameof(ConsoleCaptureCollection))]
 public sealed class TargetCatalogJsonTests
 {
     private sealed class CatalogBuild : TampBuild
