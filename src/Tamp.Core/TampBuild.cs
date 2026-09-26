@@ -469,6 +469,16 @@ public abstract partial class TampBuild
                 }
             }
 
+            // #22: `--plan --format json` prints the resolved execution order as JSON
+            // and runs nothing (powers the MCP `plan` tool). Text `--plan` still flows
+            // through the executor's Plan mode below.
+            if (mode == ExecutionMode.Plan && format == OutputFormat.Json)
+            {
+                var planOrder = graph.ComputeExecutionOrder(targetNames.ToArray());
+                PrintPlanJson(targetNames, planOrder);
+                return 0;
+            }
+
             // TAM-140: in --reporter=json mode, suppress the ASCII banner so
             // stdout carries only NDJSON events.
             if (reporterKind != ReporterKind.Json)
