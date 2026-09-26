@@ -21,13 +21,23 @@ public static class BuildEventSchema
     /// <summary>Schema version stamped on every <see cref="BuildEvent.SchemaVersion"/>.</summary>
     public const string Version = "1.0";
 
-    /// <summary>The pinned set of event types shipped in `#0a` (lifecycle only). #11 adds tool/diagnostic/artifact/gate/secret events additively.</summary>
+    /// <summary>
+    /// The pinned set of event types. Lifecycle (`#0a`) + the vocabulary expansion (#11):
+    /// tool / secret / diagnostic / artifact / gate. Additive-only — new entries are fine,
+    /// renames/removals require an ADR amendment (pinned by <c>CanonicalEventModelTests</c>).
+    /// </summary>
     public static readonly IReadOnlyList<string> Types = new[]
     {
         BuildEventTypes.BuildStarted,
         BuildEventTypes.BuildFinished,
         BuildEventTypes.TargetStarted,
         BuildEventTypes.TargetFinished,
+        BuildEventTypes.ToolInvoked,
+        BuildEventTypes.ToolExited,
+        BuildEventTypes.SecretAccessRequested,
+        BuildEventTypes.DiagnosticEmitted,
+        BuildEventTypes.ArtifactProduced,
+        BuildEventTypes.GateEvaluated,
     };
 }
 
@@ -38,6 +48,14 @@ public static class BuildEventTypes
     public const string BuildFinished = "build.finished";
     public const string TargetStarted = "target.started";
     public const string TargetFinished = "target.finished";
+
+    // Vocabulary expansion (#11).
+    public const string ToolInvoked = "tool.invoked";
+    public const string ToolExited = "tool.exited";
+    public const string SecretAccessRequested = "secret.access.requested";
+    public const string DiagnosticEmitted = "diagnostic.emitted";
+    public const string ArtifactProduced = "artifact.produced";
+    public const string GateEvaluated = "gate.evaluated";
 }
 
 /// <summary>Pinned status vocabulary for <see cref="TargetFinishedPayload.Status"/> and <see cref="BuildFinishedPayload.Status"/>.</summary>

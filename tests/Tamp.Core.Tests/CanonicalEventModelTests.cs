@@ -151,6 +151,8 @@ public sealed class CanonicalEventModelTests
         Assert.Equal(new[]
         {
             "build.started", "build.finished", "target.started", "target.finished",
+            "tool.invoked", "tool.exited", "secret.access.requested",
+            "diagnostic.emitted", "artifact.produced", "gate.evaluated",
         }, BuildEventSchema.Types);
         Assert.Equal("1.0", BuildEventSchema.Version);
     }
@@ -188,7 +190,7 @@ public sealed class CanonicalEventModelTests
         Assert.False(root.TryGetProperty("targetId", out _));      // null dropped for build-level event
 
         var payload = root.GetProperty("payload");
-        Assert.Equal("build.started", payload.GetProperty("kind").GetString());  // payload discriminator
+        Assert.Equal("build.started", payload.GetProperty("$type").GetString());  // payload discriminator
         Assert.True(payload.TryGetProperty("requestedTargets", out _));
     }
 
