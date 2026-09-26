@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using Tamp.Diagnostics;
 
 namespace Tamp;
@@ -32,6 +33,21 @@ public sealed class Executor
     private readonly RedactingTextWriter _redactedOutput;
     private readonly Logger _log;
 
+    // ── Canonical event stream (`#0a`, ADR 0019). The executor emits every
+    // lifecycle fact once through _sink; consumers are projections over it.
+    // In `#0a` the sink fans out to a ReporterProjectionSink (so the public
+    // IBuildReporter surface keeps working) plus any additional sink (the
+    // agent NDJSON sink lands in #9). The ADR-0018 ActivitySource/Meter
+    // emission below stays inline for now and is folded into a projection —
+    // and this dual path removed — in #0c.
+    private readonly IBuildEventSink _sink;
+    private readonly string _runId = Guid.NewGuid().ToString("N");
+    private readonly string _workerId = WorkerIdResolver.Resolve();
+    private long _seq;
+    private string _buildId = Guid.NewGuid().ToString("N");
+    private string _traceId = string.Empty;
+    private string _buildSpanId = string.Empty;
+
     public Executor(
         TargetGraph graph,
         ExecutionMode mode = ExecutionMode.Run,
@@ -40,7 +56,8 @@ public sealed class Executor
         BuildProjectInfo? projectInfo = null,
         IReadOnlySet<string>? skippedByUser = null,
         bool skipDependencies = false,
-        IBuildReporter? reporter = null)
+        IBuildReporter? reporter = null,
+        IBuildEventSink? eventSink = null)
     {
         Graph = graph ?? throw new ArgumentNullException(nameof(graph));
         Mode = mode;
@@ -49,10 +66,45 @@ public sealed class Executor
         SkippedByUser = skippedByUser ?? new HashSet<string>(StringComparer.Ordinal);
         SkipDependencies = skipDependencies;
         Reporter = reporter ?? NoopBuildReporter.Instance;
+        _sink = eventSink is null
+            ? new CompositeBuildEventSink(new ReporterProjectionSink(Reporter))
+            : new CompositeBuildEventSink(new ReporterProjectionSink(Reporter), eventSink);
         _redactionTable = new RedactionTable();
         _redactedOutput = new RedactingTextWriter(Output, _redactionTable);
         _log = new Logger(_redactedOutput, verbosity);
     }
+
+    /// <summary>Mint a fresh 16-hex (8-byte) span id for the canonical event stream.</summary>
+    private static string NewSpanId()
+    {
+        Span<byte> b = stackalloc byte[8];
+        RandomNumberGenerator.Fill(b);
+        return Convert.ToHexString(b).ToLowerInvariant();
+    }
+
+    /// <summary>Repo root for the build.started payload; null when it can't be resolved (RootDirectory throws off-repo).</summary>
+    private static string? SafeWorktree()
+    {
+        try { return TampBuild.RootDirectory.Value; }
+        catch { return null; }
+    }
+
+    /// <summary>Emit one canonical <see cref="BuildEvent"/> to the fan-out sink.</summary>
+    private void Emit(string type, string? targetId, string spanId, string? parentSpanId, BuildEventPayload payload)
+        => _sink.Emit(new BuildEvent
+        {
+            Type = type,
+            BuildId = _buildId,
+            RunId = _runId,
+            TargetId = targetId,
+            TraceId = _traceId,
+            SpanId = spanId,
+            ParentSpanId = parentSpanId,
+            WorkerId = _workerId,
+            Seq = Interlocked.Increment(ref _seq),
+            Ts = DateTimeOffset.UtcNow,
+            Payload = payload,
+        });
 
     /// <summary>
     /// Build-lifecycle event sink. Defaults to <see cref="NoopBuildReporter"/>;
@@ -212,9 +264,18 @@ public sealed class Executor
         var buildSw = Stopwatch.StartNew();
         var buildSwStartTicks = Stopwatch.GetTimestamp();
 
-        // ── TAM-140: emit build.start event (no-op for NoopReporter)
-        var buildId = Guid.NewGuid().ToString("N");
-        Reporter.OnBuildStart(buildId, rootSet.ToList(), order.Select(s => s.Name).ToList());
+        // ── Canonical build.started (`#0a`). Mint the build/trace/span identity,
+        // then emit; the ReporterProjectionSink turns this into IBuildReporter.OnBuildStart.
+        _buildId = Guid.NewGuid().ToString("N");
+        _traceId = _buildId;
+        _buildSpanId = NewSpanId();
+        Emit(BuildEventTypes.BuildStarted, targetId: null, spanId: _buildSpanId, parentSpanId: null,
+            new BuildStartedPayload
+            {
+                RequestedTargets = rootSet.ToList(),
+                ExecutionClosure = order.Select(s => s.Name).ToList(),
+                Worktree = SafeWorktree(),
+            });
 
         // ── Diagnostics: root build span (ADR 0018).
         using var buildSpan = TampDiagnostics.BuildSource.StartActivity("build", ActivityKind.Internal);
@@ -243,11 +304,15 @@ public sealed class Executor
 
         foreach (var spec in order)
         {
+            // One span id per target iteration; shared by its started + finished events.
+            var targetSpanId = NewSpanId();
+
             // After a failure, only AssuredAfterFailure targets keep running.
             if (buildFailedAt.HasValue && !spec.AssuredAfterFailure)
             {
                 _log.WriteRaw($"==> {spec.Name} (not run: build already failed)");
-                Reporter.OnTargetNotRun(spec.Name, "build already failed");
+                Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
+                    new TargetFinishedPayload { Target = spec.Name, Status = BuildEventStatus.NotRun, Reason = "build already failed" });
                 records.Add(TargetExecutionRecord.NotRun(spec.Name));
                 continue;
             }
@@ -257,7 +322,8 @@ public sealed class Executor
             if (IsSkippedByUser(spec, rootSet, out var userSkipReason))
             {
                 _log.WriteRaw($"==> {spec.Name} ({userSkipReason})");
-                Reporter.OnTargetSkipped(spec.Name, userSkipReason);
+                Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
+                    new TargetFinishedPayload { Target = spec.Name, Status = BuildEventStatus.Skipped, Reason = userSkipReason });
                 skipped.Add(spec.Name);
                 records.Add(TargetExecutionRecord.Skipped(spec.Name, userSkipReason));
                 EmitSkippedTargetActivity(spec, userSkipReason);
@@ -267,7 +333,8 @@ public sealed class Executor
             if (CheckSkippedByCondition(spec) is { } skipReason)
             {
                 _log.WriteRaw($"==> {spec.Name} (skipped: {skipReason})");
-                Reporter.OnTargetSkipped(spec.Name, skipReason);
+                Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
+                    new TargetFinishedPayload { Target = spec.Name, Status = BuildEventStatus.Skipped, Reason = skipReason });
                 skipped.Add(spec.Name);
                 records.Add(TargetExecutionRecord.Skipped(spec.Name, skipReason));
                 EmitSkippedTargetActivity(spec, skipReason);
@@ -278,12 +345,14 @@ public sealed class Executor
             if (CheckRequirementsFailed(spec) is { } reqFail)
             {
                 _log.WriteRaw($"==> {spec.Name} REQUIRES failed: {reqFail}");
-                Reporter.OnTargetFailed(new TargetFailureDetail
-                {
-                    TargetName = spec.Name,
-                    Duration = TimeSpan.Zero,
-                    FailureReason = $"Requires failed: {reqFail}",
-                });
+                Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
+                    new TargetFinishedPayload
+                    {
+                        Target = spec.Name,
+                        Status = BuildEventStatus.Failure,
+                        DurationMs = 0,
+                        Reason = $"Requires failed: {reqFail}",
+                    });
                 records.Add(TargetExecutionRecord.Failed(spec.Name, TimeSpan.Zero, $"Requires failed: {reqFail}"));
                 if (!buildFailedAt.HasValue)
                 {
@@ -294,7 +363,8 @@ public sealed class Executor
             }
 
             _log.WriteRaw($"==> {spec.Name}");
-            Reporter.OnTargetStart(spec.Name);
+            Emit(BuildEventTypes.TargetStarted, spec.Name, targetSpanId, _buildSpanId,
+                new TargetStartedPayload { Target = spec.Name });
             var sw = Stopwatch.StartNew();
             var swStartTicks = Stopwatch.GetTimestamp();
             var allocAtStart = GC.GetTotalAllocatedBytes(precise: false);
@@ -365,13 +435,15 @@ public sealed class Executor
                             if (spec.FailureMode == FailureMode.Continue) continue;
                             sw.Stop();
                             capturingOutput.FlushPendingLine();
-                            Reporter.OnTargetFailed(new TargetFailureDetail
-                            {
-                                TargetName = spec.Name,
-                                Duration = sw.Elapsed,
-                                FailureReason = $"exit {exit}",
-                                OutputTail = outputBuffer.Drain(),
-                            });
+                            Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
+                                new TargetFinishedPayload
+                                {
+                                    Target = spec.Name,
+                                    Status = BuildEventStatus.Failure,
+                                    DurationMs = sw.Elapsed.TotalMilliseconds,
+                                    Reason = $"exit {exit}",
+                                    OutputTail = outputBuffer.Drain(),
+                                });
                             records.Add(TargetExecutionRecord.Failed(spec.Name, sw.Elapsed, $"exit {exit}"));
                                         EmitTargetTerminal(targetSpan, spec, sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeFailure, $"exit {exit}");
                             if (!buildFailedAt.HasValue)
@@ -385,7 +457,8 @@ public sealed class Executor
                 }
 
                 sw.Stop();
-                Reporter.OnTargetSucceeded(spec.Name, sw.Elapsed);
+                Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
+                    new TargetFinishedPayload { Target = spec.Name, Status = BuildEventStatus.Success, DurationMs = sw.Elapsed.TotalMilliseconds });
                 records.Add(TargetExecutionRecord.Done(spec.Name, sw.Elapsed));
                 EmitTargetTerminal(targetSpan, spec, sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeSuccess);
             }
@@ -393,7 +466,8 @@ public sealed class Executor
             {
                 sw.Stop();
                 _log.WriteRaw($"==> {spec.Name} threw {ex.GetType().Name}; continuing per FailureMode.Continue: {ex.Message}");
-                Reporter.OnTargetSucceeded(spec.Name, sw.Elapsed);
+                Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
+                    new TargetFinishedPayload { Target = spec.Name, Status = BuildEventStatus.Success, DurationMs = sw.Elapsed.TotalMilliseconds });
                 records.Add(TargetExecutionRecord.Done(spec.Name, sw.Elapsed));
                 EmitTargetTerminal(targetSpan, spec, sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeSuccess);
             }
@@ -402,13 +476,15 @@ public sealed class Executor
                 sw.Stop();
                 _log.WriteRaw($"==> {spec.Name} threw {ex.GetType().Name}: {ex.Message}");
                 capturingOutput.FlushPendingLine();
-                Reporter.OnTargetFailed(new TargetFailureDetail
-                {
-                    TargetName = spec.Name,
-                    Duration = sw.Elapsed,
-                    FailureReason = $"{ex.GetType().Name}: {ex.Message}",
-                    OutputTail = outputBuffer.Drain(),
-                });
+                Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
+                    new TargetFinishedPayload
+                    {
+                        Target = spec.Name,
+                        Status = BuildEventStatus.Failure,
+                        DurationMs = sw.Elapsed.TotalMilliseconds,
+                        Reason = $"{ex.GetType().Name}: {ex.Message}",
+                        OutputTail = outputBuffer.Drain(),
+                    });
                 records.Add(TargetExecutionRecord.Failed(spec.Name, sw.Elapsed, ex.Message));
                 EmitTargetTerminal(targetSpan, spec, sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeFailure, $"{ex.GetType().Name}: {ex.Message}");
                 if (!buildFailedAt.HasValue)
@@ -486,12 +562,23 @@ public sealed class Executor
         TampDiagnostics.BuildDurationMs.Record(buildSw.Elapsed.TotalMilliseconds, new KeyValuePair<string, object?>(TampDiagnostics.Tags.OutcomeKey, buildOutcome));
         TampDiagnostics.BuildPeakMemoryBytes.Record(peakWorkingSetBytes, new KeyValuePair<string, object?>(TampDiagnostics.Tags.OutcomeKey, buildOutcome));
 
-        // ── TAM-140: emit build.end event for IBuildReporter (no-op for NoopReporter)
-        Reporter.OnBuildEnd(
-            status: buildExitCode == 0 ? "succeeded" : "failed",
-            firstFailedTarget: buildFailedAt?.Name,
-            exitCode: buildExitCode,
-            totalDuration: buildSw.Elapsed);
+        // ── Canonical build.finished (`#0a`). ReporterProjectionSink turns this
+        // into IBuildReporter.OnBuildEnd. Status vocabulary ("succeeded"/"failed")
+        // is preserved for the reporter surface.
+        Emit(BuildEventTypes.BuildFinished, targetId: null, spanId: _buildSpanId, parentSpanId: null,
+            new BuildFinishedPayload
+            {
+                Status = buildExitCode == 0 ? "succeeded" : "failed",
+                DurationMs = buildSw.Elapsed.TotalMilliseconds,
+                ExitCode = buildExitCode,
+                FirstFailedTarget = buildFailedAt?.Name,
+                TargetsTotal = records.Count,
+                Succeeded = succeeded,
+                Failed = failed,
+                Skipped = skippedCount,
+                NotRun = notRun,
+                CommandsTotal = commandsDispatchedCount,
+            });
 
         return new ExecutionResult
         {
