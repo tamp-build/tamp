@@ -567,7 +567,8 @@ public abstract partial class TampBuild
                 capabilityMode: capabilityMode,
                 allowSideEffects: allowSideEffects,
                 runOnly: runOnly,
-                ruleFilters: _ruleFilter);
+                ruleFilters: _ruleFilter,
+                cacheAdvice: ResolveCacheAdvice(args, Environment.GetEnvironmentVariable));
             return executor.Run(targetNames.ToArray()).ExitCode;
         }
         catch (InvalidOperationException ex)
@@ -615,6 +616,14 @@ public abstract partial class TampBuild
         }
         var env = getEnv("TAMP_EVENTS");
         return string.IsNullOrWhiteSpace(env) ? null : env;
+    }
+
+    /// <summary>Resolve the #17 would-skip cache advisory opt-in: <c>--cache-advice</c> flag or truthy <c>TAMP_CACHE_ADVICE</c>. Default off.</summary>
+    internal static bool ResolveCacheAdvice(string[] args, Func<string, string?> getEnv)
+    {
+        if (args.Contains("--cache-advice")) return true;
+        var env = getEnv("TAMP_CACHE_ADVICE")?.Trim();
+        return !string.IsNullOrEmpty(env) && env is not "0" && !env.Equals("false", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Resolve the #16 <c>--rule &lt;id&gt;</c> / <c>--rule=&lt;id&gt;</c> filters (repeatable). Cheap pre-scan; <see cref="ParseInvocation"/> untouched.</summary>

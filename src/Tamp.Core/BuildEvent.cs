@@ -140,6 +140,13 @@ public sealed record TargetFinishedPayload : BuildEventPayload
 
     /// <summary>On failure, the structured remedy an agent can act on (reproduce command + hint + coarse class). Null on success.</summary>
     public TargetRemedy? Remedy { get; init; }
+
+    /// <summary>
+    /// #17 cache advisory: <see langword="true"/> when the target's inputs matched the last
+    /// successful run (a cache would have skipped it — but it still ran). Null when the cache
+    /// advisory is off or the target declares no <c>InputHash</c>.
+    /// </summary>
+    public bool? WouldSkip { get; init; }
 }
 
 /// <summary>A produced artifact (a plain nested record; mirrors <see cref="ArtifactProducedPayload"/>'s shape for the <see cref="TargetFinishedPayload.Outputs"/> list).</summary>
