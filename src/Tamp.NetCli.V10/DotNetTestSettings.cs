@@ -33,7 +33,7 @@ public sealed class DotNetTestSettings : DotNetSettingsBase
     public Dictionary<string, string> Properties { get; } = new();
 
     /// <summary>
-    /// When true (default), and <see cref="Project"/> targets a <c>.sln</c>/<c>.slnx</c>, any TRX
+    /// When true (default), and <see cref="DotNetSettingsBase.Project"/> targets a <c>.sln</c>/<c>.slnx</c>, any TRX
     /// logger string with a static <c>LogFileName=foo.trx</c> is rewritten to
     /// <c>LogFilePrefix=foo</c> so VSTest auto-disambiguates per assembly. Without this rewrite,
     /// solution-mode runs overwrite the TRX once per test project — only the last assembly's

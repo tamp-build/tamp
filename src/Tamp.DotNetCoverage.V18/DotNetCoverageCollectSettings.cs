@@ -11,7 +11,7 @@ public enum CoverageLogLevel
 /// <summary>
 /// Settings for <c>dotnet-coverage collect</c>. The wrapped command —
 /// the process whose execution gets coverage-instrumented — is passed
-/// to <see cref="DotNetCoverage.Collect"/> as a separate
+/// to <c>DotNetCoverage.Collect</c> as a separate
 /// <see cref="CommandPlan"/> argument, not via this settings object.
 /// </summary>
 public sealed class DotNetCoverageCollectSettings

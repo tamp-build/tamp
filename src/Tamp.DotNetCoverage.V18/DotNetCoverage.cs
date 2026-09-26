@@ -2,8 +2,8 @@ namespace Tamp.DotNetCoverage.V18;
 
 /// <summary>
 /// Wrapper for Microsoft's <c>dotnet-coverage</c> tool (current major
-/// v17). Two verbs are surfaced: <see cref="Collect"/> wraps a child
-/// command with coverage collection, and <see cref="Merge"/> combines
+/// v17). Two verbs are surfaced: <c>Collect</c> wraps a child
+/// command with coverage collection, and <c>Merge</c> combines
 /// (and optionally converts the format of) collected coverage files.
 /// </summary>
 /// <remarks>

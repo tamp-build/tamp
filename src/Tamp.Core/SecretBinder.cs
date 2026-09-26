@@ -50,6 +50,7 @@ public static class SecretBinder
     /// emit CI-vendor masking instructions (e.g. <c>::add-mask::</c> on
     /// GitHub Actions). Pass <c>null</c> to skip.
     /// </param>
+    /// <param name="osStore">Optional OS secret store (Keychain / libsecret / DPAPI) consulted when an env var isn't set; <c>null</c> uses the default resolution.</param>
     public static void Bind(
         TampBuild build,
         Func<string, string?> getEnv,
