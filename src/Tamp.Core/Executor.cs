@@ -493,6 +493,10 @@ public sealed class Executor
         var skipped = new List<string>();
         var handlersInvoked = new List<string>();
         (string Name, int ExitCode)? buildFailedAt = null;
+        // #4: FailureMode.Continue failures do NOT abort the build (buildFailedAt stays unset, so
+        // later targets still run) but they DO fail the run — recorded here to drive a non-zero
+        // exit code without the swallow-the-failure bug.
+        (string Name, int ExitCode)? continueFailedAt = null;
         var buildSw = Stopwatch.StartNew();
         var buildSwStartTicks = Stopwatch.GetTimestamp();
 
@@ -661,6 +665,9 @@ public sealed class Executor
             catch { workingSetAtStart = 0; cpuAtStart = TimeSpan.Zero; }
             var actionsCount = spec.Actions.Count;
             var commandsForThisTarget = 0;
+            // #4: under FailureMode.Continue, remember the first failing plan exit so the target
+            // ends Failed (not Done) after the remaining plans have run.
+            int? continuePlanFailExit = null;
 
             // Per-target output ring buffer (TAM-230 — reporters surface failure context).
             // Wrap _redactedOutput with a CapturingTextWriter so every line the target's
@@ -758,7 +765,14 @@ public sealed class Executor
                         if (exit != 0)
                         {
                             _log.WriteRaw($"==> {spec.Name} FAILED (exit {exit})");
-                            if (spec.FailureMode == FailureMode.Continue) continue;
+                            if (spec.FailureMode == FailureMode.Continue)
+                            {
+                                // #4: keep running the remaining plans, but remember the failure so
+                                // the target ends Failed and the build exits non-zero (it just
+                                // doesn't abort the rest of the build).
+                                continuePlanFailExit ??= exit;
+                                continue;
+                            }
                             sw.Stop();
                             capturingOutput.FlushPendingLine();
                             EmitTargetFailure(spec, targetSpanId, sw.Elapsed, $"exit {exit}", isRequiresFailure: false, outputTail: RedactedTail(outputBuffer));
@@ -775,17 +789,36 @@ public sealed class Executor
                 }
 
                 sw.Stop();
-                EmitTargetSuccess(spec, targetSpanId, sw.Elapsed);
-                records.Add(TargetExecutionRecord.Done(spec.Name, sw.Elapsed));
-                DiagnosticsProjection.AnnotateTargetTerminal(targetSpan, spec, new TargetTerminalTelemetry(sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeSuccess, null));
+                if (continuePlanFailExit is int cpfe)
+                {
+                    // #4: a plan failed under FailureMode.Continue. The remaining plans ran, but the
+                    // target is a failure — record it and fail the build (non-aborting) instead of
+                    // masking it as Done + exit 0.
+                    capturingOutput.FlushPendingLine();
+                    var reason = $"exit {cpfe} (FailureMode.Continue: remaining plans ran; target failed, build not aborted)";
+                    EmitTargetFailure(spec, targetSpanId, sw.Elapsed, reason, isRequiresFailure: false, outputTail: RedactedTail(outputBuffer));
+                    records.Add(TargetExecutionRecord.Failed(spec.Name, sw.Elapsed, reason));
+                    DiagnosticsProjection.AnnotateTargetTerminal(targetSpan, spec, new TargetTerminalTelemetry(sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeFailure, reason));
+                    continueFailedAt ??= (spec.Name, cpfe);
+                }
+                else
+                {
+                    EmitTargetSuccess(spec, targetSpanId, sw.Elapsed);
+                    records.Add(TargetExecutionRecord.Done(spec.Name, sw.Elapsed));
+                    DiagnosticsProjection.AnnotateTargetTerminal(targetSpan, spec, new TargetTerminalTelemetry(sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeSuccess, null));
+                }
             }
             catch (Exception ex) when (spec.FailureMode == FailureMode.Continue)
             {
+                // #4: an exception under FailureMode.Continue is a failure that must not be masked
+                // as success. Record it and fail the build, but don't abort the remaining targets.
                 sw.Stop();
-                _log.WriteRaw($"==> {spec.Name} threw {ex.GetType().Name}; continuing per FailureMode.Continue: {ex.Message}");
-                EmitTargetSuccess(spec, targetSpanId, sw.Elapsed);
-                records.Add(TargetExecutionRecord.Done(spec.Name, sw.Elapsed));
-                DiagnosticsProjection.AnnotateTargetTerminal(targetSpan, spec, new TargetTerminalTelemetry(sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeSuccess, null));
+                _log.WriteRaw($"==> {spec.Name} FAILED (threw {ex.GetType().Name}; FailureMode.Continue does not abort the build): {ex.Message}");
+                capturingOutput.FlushPendingLine();
+                EmitTargetFailure(spec, targetSpanId, sw.Elapsed, $"{ex.GetType().Name}: {ex.Message}", isRequiresFailure: false, outputTail: RedactedTail(outputBuffer));
+                records.Add(TargetExecutionRecord.Failed(spec.Name, sw.Elapsed, ex.Message));
+                DiagnosticsProjection.AnnotateTargetTerminal(targetSpan, spec, new TargetTerminalTelemetry(sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeFailure, $"{ex.GetType().Name}: {ex.Message}"));
+                continueFailedAt ??= (spec.Name, 1);
             }
             catch (Exception ex)
             {
@@ -820,12 +853,16 @@ public sealed class Executor
         if (_cacheAdvice) _hashCache?.Save();
 
         buildSw.Stop();
-        WriteBuildSummary(records, buildSw.Elapsed, buildFailedAt?.Name);
+        // #4: the run failed if a target aborted the build (buildFailedAt) OR a FailureMode.Continue
+        // target failed without aborting (continueFailedAt). Both fail the exit code + reporting;
+        // only buildFailedAt drives the abort (NotRun) path above.
+        var effectiveFailedAt = buildFailedAt ?? continueFailedAt;
+        WriteBuildSummary(records, buildSw.Elapsed, effectiveFailedAt?.Name);
         WriteCompactFailureSummary(records);
         _log.Flush();
 
         var traversed = records.Count(r => r.Status is not TargetStatus.NotRun);
-        var buildExitCode = buildFailedAt?.ExitCode ?? 0;
+        var buildExitCode = effectiveFailedAt?.ExitCode ?? 0;
         var buildEndTicks = Stopwatch.GetTimestamp();
         var buildDurationNs = (long)((buildEndTicks - buildSwStartTicks) * 1_000_000_000.0 / Stopwatch.Frequency);
 
@@ -854,8 +891,8 @@ public sealed class Executor
             Skipped: skippedCount,
             NotRun: notRun,
             CommandsTotal: commandsDispatchedCount,
-            FailureTarget: buildFailedAt?.Name,
-            FailureExitCode: buildFailedAt?.ExitCode,
+            FailureTarget: effectiveFailedAt?.Name,
+            FailureExitCode: effectiveFailedAt?.ExitCode,
             HandlersInvoked: handlersInvoked));
 
         // ── Canonical build.finished (`#0a`). ReporterProjectionSink turns this
@@ -867,7 +904,7 @@ public sealed class Executor
                 Status = buildExitCode == 0 ? "succeeded" : "failed",
                 DurationMs = buildSw.Elapsed.TotalMilliseconds,
                 ExitCode = buildExitCode,
-                FirstFailedTarget = buildFailedAt?.Name,
+                FirstFailedTarget = effectiveFailedAt?.Name,
                 TargetsTotal = records.Count,
                 Succeeded = succeeded,
                 Failed = failed,
@@ -881,7 +918,7 @@ public sealed class Executor
             Mode = Mode,
             ExitCode = buildExitCode,
             TargetsTraversed = traversed,
-            FailedTarget = buildFailedAt?.Name,
+            FailedTarget = effectiveFailedAt?.Name,
             FailureHandlersInvoked = handlersInvoked,
             SkippedTargets = skipped,
             ExecutionRecords = records,

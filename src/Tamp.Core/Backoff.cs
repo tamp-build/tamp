@@ -42,7 +42,11 @@ public enum FailureMode
 {
     /// <summary>Default: target failure aborts the build.</summary>
     Fatal,
-    /// <summary>Target failure is logged but does not stop the build.</summary>
+    /// <summary>
+    /// Target failure does not <em>abort</em> the build — remaining plans in the target and
+    /// subsequent targets still run — but the target is still recorded as failed and the build
+    /// exits non-zero. Use it to "run everything, then report," not to swallow failures (#4).
+    /// </summary>
     Continue,
     /// <summary>Target is retried per its <see cref="Backoff"/>.</summary>
     Retry,
