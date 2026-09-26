@@ -326,6 +326,7 @@ public abstract partial class TampBuild
     public static int Execute<T>(string[] args) where T : TampBuild, new()
     {
         T? build = null;
+        NdjsonEventSink? eventSink = null;
         try
         {
             build = new T();
@@ -498,11 +499,22 @@ public abstract partial class TampBuild
                 ? defaultReporter
                 : new CompositeBuildReporter(new[] { defaultReporter }.Concat(adopterReporters).ToArray());
 
+            // `#0b` (ADR 0019): agent NDJSON event sink on a separate channel.
+            // Resolved from `--events <path>` / `TAMP_EVENTS`; purely additive —
+            // the human console is unaffected. Best-effort open (warns + skips on
+            // failure). Only for an actual run; disposed in the finally below.
+            if (mode == ExecutionMode.Run
+                && ResolveEventsTarget(args, Environment.GetEnvironmentVariable) is { } eventsPath)
+            {
+                eventSink = NdjsonEventSink.TryCreate(eventsPath, Console.Error);
+            }
+
             var executor = new Executor(
                 graph, mode, output: logOutput, verbosity, projectInfo,
                 skippedByUser: skipTargets,
                 skipDependencies: skipDeps,
-                reporter: reporter);
+                reporter: reporter,
+                eventSink: eventSink);
             return executor.Run(targetNames.ToArray()).ExitCode;
         }
         catch (InvalidOperationException ex)
@@ -517,7 +529,39 @@ public abstract partial class TampBuild
             // catch above so a flaky build doesn't slowly fill /tmp.
             try { build?.CleanUpScratchDirs(); }
             catch { /* swallow — cleanup must not change the build's exit code */ }
+
+            // Flush + close the NDJSON event stream (best-effort; never affects exit code).
+            try { eventSink?.Dispose(); }
+            catch { /* swallow */ }
         }
+    }
+
+    /// <summary>
+    /// Resolve the target for the `#0b` NDJSON event stream: the <c>--events &lt;path&gt;</c>
+    /// / <c>--events=&lt;path&gt;</c> flag wins, otherwise the <c>TAMP_EVENTS</c> env var.
+    /// Returns <see langword="null"/> when neither is set. A cheap pre-scan (mirrors
+    /// <see cref="IsListOnlyInvocation"/>) so <see cref="ParseInvocation"/>'s shape is
+    /// untouched; the flag value is already skipped from target parsing by the
+    /// unknown-flag handling in <see cref="ParseInvocation"/>.
+    /// </summary>
+    internal static string? ResolveEventsTarget(string[] args, Func<string, string?> getEnv)
+    {
+        for (var i = 0; i < args.Length; i++)
+        {
+            var a = args[i];
+            if (a.StartsWith("--events=", StringComparison.Ordinal))
+            {
+                var v = a["--events=".Length..];
+                if (!string.IsNullOrWhiteSpace(v)) return v;
+            }
+            else if (a == "--events" && i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                var v = args[i + 1];
+                if (!string.IsNullOrWhiteSpace(v)) return v;
+            }
+        }
+        var env = getEnv("TAMP_EVENTS");
+        return string.IsNullOrWhiteSpace(env) ? null : env;
     }
 
     /// <summary>Parse the build invocation: zero-or-more target names plus mode flags.</summary>
