@@ -147,6 +147,14 @@ public sealed record TargetFinishedPayload : BuildEventPayload
     /// advisory is off or the target declares no <c>InputHash</c>.
     /// </summary>
     public bool? WouldSkip { get; init; }
+
+    /// <summary>
+    /// #23 agent economics: worktree-relative path to this target's captured log
+    /// (<c>.tamp/logs/&lt;buildId&gt;/&lt;target&gt;.log</c>, redacted) when <c>--capture-logs</c>
+    /// is on and the target ran. Null when capture is off or the target never ran. Lets an
+    /// agent fetch the one failing log lazily instead of holding the whole output stream.
+    /// </summary>
+    public string? LogPath { get; init; }
 }
 
 /// <summary>A produced artifact (a plain nested record; mirrors <see cref="ArtifactProducedPayload"/>'s shape for the <see cref="TargetFinishedPayload.Outputs"/> list).</summary>

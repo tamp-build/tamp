@@ -568,7 +568,8 @@ public abstract partial class TampBuild
                 allowSideEffects: allowSideEffects,
                 runOnly: runOnly,
                 ruleFilters: _ruleFilter,
-                cacheAdvice: ResolveCacheAdvice(args, Environment.GetEnvironmentVariable));
+                cacheAdvice: ResolveCacheAdvice(args, Environment.GetEnvironmentVariable),
+                captureLogs: ResolveCaptureLogs(args, Environment.GetEnvironmentVariable));
             return executor.Run(targetNames.ToArray()).ExitCode;
         }
         catch (InvalidOperationException ex)
@@ -623,6 +624,14 @@ public abstract partial class TampBuild
     {
         if (args.Contains("--cache-advice")) return true;
         var env = getEnv("TAMP_CACHE_ADVICE")?.Trim();
+        return !string.IsNullOrEmpty(env) && env is not "0" && !env.Equals("false", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Resolve the #23 per-target log capture opt-in: <c>--capture-logs</c> flag or truthy <c>TAMP_CAPTURE_LOGS</c>. Default off.</summary>
+    internal static bool ResolveCaptureLogs(string[] args, Func<string, string?> getEnv)
+    {
+        if (args.Contains("--capture-logs")) return true;
+        var env = getEnv("TAMP_CAPTURE_LOGS")?.Trim();
         return !string.IsNullOrEmpty(env) && env is not "0" && !env.Equals("false", StringComparison.OrdinalIgnoreCase);
     }
 
@@ -765,6 +774,12 @@ public abstract partial class TampBuild
                         break;
                     case "skip-deps":
                         skipDeps = true;
+                        break;
+                    // Valueless pre-scan flags (resolved before ParseInvocation): list them
+                    // here as no-ops so they don't fall into the default parameter-binding case
+                    // and swallow a following target name (e.g. `tamp --capture-logs Compile`).
+                    case "cache-advice":
+                    case "capture-logs":
                         break;
                     case "format":
                         var formatValue = inlineValue ?? (i + 1 < args.Length ? args[++i] : null);
