@@ -49,6 +49,23 @@ public abstract partial class TampBuild
         Console.WriteLine(JsonSerializer.Serialize(catalog, s_catalogJsonOptions));
     }
 
+    /// <summary>JSON rendering of a plan (<c>--plan --format json</c>): the resolved execution order for the requested roots. Runs nothing. Powers the MCP <c>plan</c> tool (#22).</summary>
+    private static void PrintPlanJson(IReadOnlyList<string> roots, IReadOnlyList<TargetSpec> order)
+    {
+        var dto = new PlanDto
+        {
+            Roots = roots,
+            Order = order.Select(t => new PlanStepDto
+            {
+                Name = t.Name,
+                Phase = t.Phase == Phase.None ? null : t.Phase.ToString(),
+                DependsOn = t.Dependencies,
+                Capability = t.Capability.ToString(),
+            }).ToList(),
+        };
+        Console.WriteLine(JsonSerializer.Serialize(dto, s_catalogJsonOptions));
+    }
+
     private static TargetDto BuildTargetDto(TargetSpec t) => new()
     {
         Name = t.Name,
@@ -58,6 +75,8 @@ public abstract partial class TampBuild
         TopLevel = !t.IsInternal,           // Internal opts OUT of TopLevel (1.1.0+)
         IsDefault = t.IsDefault,
         DependsOn = t.Dependencies,
+        Produces = t.ProducedGlobs,
+        Capability = t.Capability.ToString(),
         OrderAfter = t.OrderAfter,
         OrderBefore = t.OrderBefore,
         Triggers = t.Triggers,
@@ -165,6 +184,8 @@ public abstract partial class TampBuild
         [JsonPropertyName("top_level")] public bool TopLevel { get; init; }
         [JsonPropertyName("is_default")] public bool IsDefault { get; init; }
         [JsonPropertyName("depends_on")] public IReadOnlyList<string> DependsOn { get; init; } = Array.Empty<string>();
+        [JsonPropertyName("produces")] public IReadOnlyList<string> Produces { get; init; } = Array.Empty<string>();
+        [JsonPropertyName("capability")] public string Capability { get; init; } = "Safe";
         [JsonPropertyName("order_after")] public IReadOnlyList<string> OrderAfter { get; init; } = Array.Empty<string>();
         [JsonPropertyName("order_before")] public IReadOnlyList<string> OrderBefore { get; init; } = Array.Empty<string>();
         [JsonPropertyName("triggers")] public IReadOnlyList<string> Triggers { get; init; } = Array.Empty<string>();
@@ -177,6 +198,20 @@ public abstract partial class TampBuild
         [JsonPropertyName("failure_mode")] public string FailureMode { get; init; } = "Fatal";
         [JsonPropertyName("idempotent")] public bool Idempotent { get; init; }
         [JsonPropertyName("timeout_ms")] public long? TimeoutMs { get; init; }
+    }
+
+    internal sealed class PlanDto
+    {
+        [JsonPropertyName("roots")] public IReadOnlyList<string> Roots { get; init; } = Array.Empty<string>();
+        [JsonPropertyName("order")] public IReadOnlyList<PlanStepDto> Order { get; init; } = Array.Empty<PlanStepDto>();
+    }
+
+    internal sealed class PlanStepDto
+    {
+        [JsonPropertyName("name")] public string Name { get; init; } = "";
+        [JsonPropertyName("phase")] public string? Phase { get; init; }
+        [JsonPropertyName("depends_on")] public IReadOnlyList<string> DependsOn { get; init; } = Array.Empty<string>();
+        [JsonPropertyName("capability")] public string Capability { get; init; } = "Safe";
     }
 
     internal sealed class ToolRequirementDto
