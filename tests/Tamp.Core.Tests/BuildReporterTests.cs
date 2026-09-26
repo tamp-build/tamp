@@ -10,7 +10,7 @@ namespace Tamp.Core.Tests;
 /// shape, lifecycle ordering, success vs failure paths, and that
 /// <c>--reporter=json</c> suppresses the text decorations on stdout.
 /// </summary>
-[Collection("ConsoleRedirect")]
+[Collection(nameof(ConsoleCaptureCollection))]
 public sealed class BuildReporterTests
 {
     private sealed class TestBuild : TampBuild

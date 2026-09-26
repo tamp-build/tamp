@@ -9,7 +9,7 @@ namespace Tamp.Core.Tests;
 /// introspection runs without invoking the targets, so tool-resolution
 /// failures during binding are tolerated when the invocation is list-only.
 /// </summary>
-[Collection("ConsoleRedirect")]
+[Collection(nameof(ConsoleCaptureCollection))]
 public sealed class ListModeLazyInjectionTests
 {
     /// <summary>
