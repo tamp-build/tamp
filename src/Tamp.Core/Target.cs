@@ -204,6 +204,15 @@ public interface ITargetDefinition
     ITargetDefinition RequiresNetwork();
     ITargetDefinition RequiresDocker();
     ITargetDefinition RequiresAdmin();
+
+    /// <summary>
+    /// Declare the capability tier this target requires (#20). Use for library-mode
+    /// side effects that don't go through a <see cref="CommandPlan"/> (e.g. a REST client
+    /// that mutates a remote system) — mark the target
+    /// <see cref="CapabilityTier.SideEffectful"/> so it's gated in agent mode. Command-based
+    /// side effects are covered automatically by <see cref="CommandPlan.RequiredCapability"/>.
+    /// </summary>
+    ITargetDefinition Capability(CapabilityTier tier);
     ITargetDefinition RequiresTool(string toolName, string? minVersion = null);
 
     // Time
@@ -344,6 +353,7 @@ internal sealed class TargetDefinition : ITargetDefinition
     private bool _requiresNetwork;
     private bool _requiresDocker;
     private bool _requiresAdmin;
+    private CapabilityTier _capability = CapabilityTier.Safe;
     private TimeSpan? _timeout;
     private TimeSpan? _expectedDuration;
     private int? _memoryBudgetMb;
@@ -600,6 +610,7 @@ internal sealed class TargetDefinition : ITargetDefinition
     public ITargetDefinition RequiresNetwork() { _requiresNetwork = true; return this; }
     public ITargetDefinition RequiresDocker() { _requiresDocker = true; return this; }
     public ITargetDefinition RequiresAdmin() { _requiresAdmin = true; return this; }
+    public ITargetDefinition Capability(CapabilityTier tier) { _capability = tier; return this; }
 
     public ITargetDefinition RequiresTool(string toolName, string? minVersion = null)
     {
@@ -702,6 +713,7 @@ internal sealed class TargetDefinition : ITargetDefinition
         RequiresNetwork = _requiresNetwork,
         RequiresDocker = _requiresDocker,
         RequiresAdmin = _requiresAdmin,
+        Capability = _capability,
         ToolRequirements = _toolRequirements.ToArray(),
         Timeout = _timeout,
         ExpectedDuration = _expectedDuration,
@@ -753,6 +765,9 @@ public sealed record TargetSpec
     public bool RequiresNetwork { get; init; }
     public bool RequiresDocker { get; init; }
     public bool RequiresAdmin { get; init; }
+
+    /// <summary>The capability tier this target declares (#20). Default <see cref="CapabilityTier.Safe"/>.</summary>
+    public CapabilityTier Capability { get; init; } = CapabilityTier.Safe;
     public IReadOnlyList<(string Tool, string? MinVersion)> ToolRequirements { get; init; }
         = Array.Empty<(string, string?)>();
     public TimeSpan? Timeout { get; init; }
