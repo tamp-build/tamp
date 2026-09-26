@@ -189,6 +189,25 @@ public sealed class DotNetTests
         Assert.Equal("45000ms", args[IndexOf(args, "--blame-hang-timeout") + 1]);
     }
 
+    [Fact]
+    public void Test_BlameCrash_Emits_Flag()
+    {
+        var args = DotNet.Test(s => s.SetBlameCrash(true)).Arguments;
+        Assert.Contains("--blame-crash", args);
+        Assert.DoesNotContain("--blame-crash-dump-type", args);
+    }
+
+    [Fact]
+    public void Test_BlameCrashDumpType_Emits_Flag_And_Type_And_Enables_Crash()
+    {
+        var args = DotNet.Test(s => s.SetBlameCrashDumpType(DotNetTestCrashDumpType.Full)).Arguments;
+        Assert.Contains("--blame-crash", args);   // dump-type implies crash capture
+        Assert.Equal("full", args[IndexOf(args, "--blame-crash-dump-type") + 1]);
+
+        var mini = DotNet.Test(s => s.SetBlameCrashDumpType(DotNetTestCrashDumpType.Mini)).Arguments;
+        Assert.Equal("mini", mini[IndexOf(mini, "--blame-crash-dump-type") + 1]);
+    }
+
     // ---- Pack ----
 
     [Fact]
