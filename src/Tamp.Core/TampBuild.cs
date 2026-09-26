@@ -514,12 +514,17 @@ public abstract partial class TampBuild
                 eventSink = NdjsonEventSink.TryCreate(eventsPath, Console.Error);
             }
 
+            // #20: capability enforcement mode + elevation (default Off — humans unaffected).
+            var (capabilityMode, allowSideEffects) = ResolveCapabilityMode(args, Environment.GetEnvironmentVariable);
+
             var executor = new Executor(
                 graph, mode, output: logOutput, verbosity, projectInfo,
                 skippedByUser: skipTargets,
                 skipDependencies: skipDeps,
                 reporter: reporter,
-                eventSink: eventSink);
+                eventSink: eventSink,
+                capabilityMode: capabilityMode,
+                allowSideEffects: allowSideEffects);
             return executor.Run(targetNames.ToArray()).ExitCode;
         }
         catch (InvalidOperationException ex)
@@ -567,6 +572,40 @@ public abstract partial class TampBuild
         }
         var env = getEnv("TAMP_EVENTS");
         return string.IsNullOrWhiteSpace(env) ? null : env;
+    }
+
+    /// <summary>
+    /// Resolve the #20 capability enforcement mode + elevation. Mode: <c>--enforce=agent</c> /
+    /// <c>--enforce agent</c> / <c>TAMP_CAPABILITY_MODE=agent</c> → <see cref="CapabilityMode.Agent"/>,
+    /// else <see cref="CapabilityMode.Off"/> (default). Elevation: <c>--allow-side-effects</c> /
+    /// a truthy <c>TAMP_ALLOW_SIDE_EFFECTS</c>. A cheap pre-scan, so <see cref="ParseInvocation"/> is untouched.
+    /// </summary>
+    internal static (CapabilityMode Mode, bool AllowSideEffects) ResolveCapabilityMode(string[] args, Func<string, string?> getEnv)
+    {
+        var mode = CapabilityMode.Off;
+        var allow = false;
+        for (var i = 0; i < args.Length; i++)
+        {
+            var a = args[i];
+            if (a.StartsWith("--enforce=", StringComparison.Ordinal))
+            {
+                if (string.Equals(a["--enforce=".Length..].Trim(), "agent", StringComparison.OrdinalIgnoreCase)) mode = CapabilityMode.Agent;
+            }
+            else if (a == "--enforce" && i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                if (string.Equals(args[i + 1].Trim(), "agent", StringComparison.OrdinalIgnoreCase)) mode = CapabilityMode.Agent;
+            }
+            else if (a == "--allow-side-effects")
+            {
+                allow = true;
+            }
+        }
+        if (string.Equals(getEnv("TAMP_CAPABILITY_MODE")?.Trim(), "agent", StringComparison.OrdinalIgnoreCase))
+            mode = CapabilityMode.Agent;
+        var envAllow = getEnv("TAMP_ALLOW_SIDE_EFFECTS")?.Trim();
+        if (!string.IsNullOrEmpty(envAllow) && envAllow is not "0" && !envAllow.Equals("false", StringComparison.OrdinalIgnoreCase))
+            allow = true;
+        return (mode, allow);
     }
 
     /// <summary>Parse the build invocation: zero-or-more target names plus mode flags.</summary>

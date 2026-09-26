@@ -52,6 +52,9 @@ public sealed class Executor
     // that target's span; null between targets (ambient events parent to the build span).
     private string? _currentTargetId;
     private string? _currentTargetSpanId;
+    // #20 capability enforcement.
+    private readonly CapabilityMode _capabilityMode;
+    private readonly bool _allowSideEffects;
 
     public Executor(
         TargetGraph graph,
@@ -62,8 +65,12 @@ public sealed class Executor
         IReadOnlySet<string>? skippedByUser = null,
         bool skipDependencies = false,
         IBuildReporter? reporter = null,
-        IBuildEventSink? eventSink = null)
+        IBuildEventSink? eventSink = null,
+        CapabilityMode capabilityMode = CapabilityMode.Off,
+        bool allowSideEffects = false)
     {
+        _capabilityMode = capabilityMode;
+        _allowSideEffects = allowSideEffects;
         Graph = graph ?? throw new ArgumentNullException(nameof(graph));
         Mode = mode;
         Output = output ?? Console.Out;
@@ -144,6 +151,24 @@ public sealed class Executor
                     Hint = reason,
                 },
             });
+
+    /// <summary>
+    /// Capability gate (#20): for a <see cref="CapabilityTier.SideEffectful"/> tier, emit a
+    /// <c>gate.evaluated</c> event and return whether it is blocked (agent mode + not elevated).
+    /// Safe / Grey tiers are not gated (returns false, no event).
+    /// </summary>
+    private bool GateSideEffectBlocked(CapabilityTier tier, string targetName, string targetSpanId, string what)
+    {
+        if (tier != CapabilityTier.SideEffectful) return false;
+        if (_capabilityMode != CapabilityMode.Agent) return false;   // Off: no enforcement, no gate event
+        var blocked = !_allowSideEffects;
+        var reason = blocked
+            ? $"{what}: side-effect capability required (agent mode; elevate with --allow-side-effects)"
+            : $"{what}: side-effect permitted";
+        Emit(BuildEventTypes.GateEvaluated, targetName, NewSpanId(), targetSpanId,
+            new GateEvaluatedPayload { Gate = "capability", Verdict = blocked ? "fail" : "pass", Blocks = blocked, Reason = reason });
+        return blocked;
+    }
 
     /// <summary>The target's input hash when it declared one; observability-only (#17 migration primitive). Null / best-effort otherwise.</summary>
     private static string? SafeInputsHash(TargetSpec spec)
@@ -386,6 +411,7 @@ public sealed class Executor
                 RequestedTargets = rootSet.ToList(),
                 ExecutionClosure = order.Select(s => s.Name).ToList(),
                 Worktree = SafeWorktree(),
+                EnforcementMode = _capabilityMode.ToString().ToLowerInvariant(),
             });
 
         // Activate the ambient emitter (#13) so target bodies / helpers can emit
@@ -454,6 +480,22 @@ public sealed class Executor
                 continue;
             }
 
+            // #20 target-level capability gate (library-mode side effects declared via .Capability()).
+            if (spec.Capability == CapabilityTier.SideEffectful
+                && GateSideEffectBlocked(spec.Capability, spec.Name, targetSpanId, $"target '{spec.Name}'"))
+            {
+                var capReason = "blocked: target requires side-effect capability (agent mode; elevate with --allow-side-effects)";
+                _log.WriteRaw($"==> {spec.Name} BLOCKED ({capReason})");
+                EmitTargetFailure(spec, targetSpanId, TimeSpan.Zero, capReason, isRequiresFailure: false, outputTail: null);
+                records.Add(TargetExecutionRecord.Failed(spec.Name, TimeSpan.Zero, capReason));
+                if (!buildFailedAt.HasValue)
+                {
+                    buildFailedAt = (spec.Name, 1);
+                    handlersInvoked.AddRange(DispatchFailureHandlers(spec.Name));
+                }
+                continue;
+            }
+
             _log.WriteRaw($"==> {spec.Name}");
             Emit(BuildEventTypes.TargetStarted, spec.Name, targetSpanId, _buildSpanId,
                 new TargetStartedPayload { Target = spec.Name });
@@ -507,6 +549,29 @@ public sealed class Executor
                 {
                     foreach (var plan in factory())
                     {
+                        // #20 capability gate at dispatch. A plan is side-effectful if it
+                        // stamps SideEffectful or declares Secrets (secret reveal). Blocked
+                        // in agent mode unless elevated — the command never runs.
+                        var planTier = plan.RequiredCapability;
+                        if (plan.Secrets.Count > 0 && planTier < CapabilityTier.SideEffectful)
+                            planTier = CapabilityTier.SideEffectful;
+                        if (GateSideEffectBlocked(planTier, spec.Name, targetSpanId, $"command '{plan.Executable}'"))
+                        {
+                            sw.Stop();
+                            capturingOutput.FlushPendingLine();
+                            var capReason = $"blocked: side-effect capability required for '{plan.Executable}' (agent mode; elevate with --allow-side-effects)";
+                            _log.WriteRaw($"==> {spec.Name} BLOCKED ({capReason})");
+                            EmitTargetFailure(spec, targetSpanId, sw.Elapsed, capReason, isRequiresFailure: false, outputTail: RedactedTail(outputBuffer));
+                            records.Add(TargetExecutionRecord.Failed(spec.Name, sw.Elapsed, capReason));
+                            DiagnosticsProjection.AnnotateTargetTerminal(targetSpan, spec, new TargetTerminalTelemetry(sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeFailure, capReason));
+                            if (!buildFailedAt.HasValue)
+                            {
+                                buildFailedAt = (spec.Name, 1);
+                                handlersInvoked.AddRange(DispatchFailureHandlers(spec.Name));
+                            }
+                            goto nextSpec;
+                        }
+
                         _redactionTable.RegisterAll(plan);
                         commandsForThisTarget++;
                         commandsDispatchedCount++;
