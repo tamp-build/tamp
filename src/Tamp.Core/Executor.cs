@@ -89,6 +89,16 @@ public sealed class Executor
         catch { return null; }
     }
 
+    /// <summary>
+    /// Drain the per-target output ring buffer and redact registered secrets from every line.
+    /// The <see cref="CapturingTextWriter"/> captures raw child output (only the console writer
+    /// redacts), so the failure tail must be scrubbed before it reaches an event payload / reporter
+    /// (which then forwards it to Telegram, NDJSON, etc.). Redacts both the new canonical
+    /// target.finished.OutputTail and — via the ReporterProjectionSink — the IBuildReporter path.
+    /// </summary>
+    private IReadOnlyList<string> RedactedTail(TargetOutputBuffer buffer)
+        => buffer.Drain().Select(l => _redactionTable.Redact(l)).ToArray();
+
     /// <summary>Emit one canonical <see cref="BuildEvent"/> to the fan-out sink.</summary>
     private void Emit(string type, string? targetId, string spanId, string? parentSpanId, BuildEventPayload payload)
         => _sink.Emit(new BuildEvent
@@ -428,7 +438,27 @@ public sealed class Executor
                         _redactionTable.RegisterAll(plan);
                         commandsForThisTarget++;
                         commandsDispatchedCount++;
+
+                        // Canonical command events (#11): a per-command span parented to
+                        // the target span. secret.access.requested comes from plan.Secrets
+                        // (name + capability, never the value); tool.invoked carries the
+                        // redaction-scrubbed argv; tool.exited carries exit + duration.
+                        var cmdSpanId = NewSpanId();
+                        foreach (var secret in plan.Secrets)
+                            Emit(BuildEventTypes.SecretAccessRequested, spec.Name, cmdSpanId, targetSpanId,
+                                new SecretAccessRequestedPayload { Name = secret.Name, Capability = "secret.reveal" });
+                        Emit(BuildEventTypes.ToolInvoked, spec.Name, cmdSpanId, targetSpanId,
+                            new ToolInvokedPayload
+                            {
+                                Tool = plan.Executable,
+                                ArgvRedacted = plan.Arguments.Select(a => _redactionTable.Redact(a)).ToArray(),
+                                Cwd = plan.WorkingDirectory,
+                            });
+                        var cmdSw = Stopwatch.StartNew();
                         exit = ProcessRunner.Execute(plan, capturingOutput, capturingOutput, sourceTargetName: spec.Name);
+                        cmdSw.Stop();
+                        Emit(BuildEventTypes.ToolExited, spec.Name, cmdSpanId, targetSpanId,
+                            new ToolExitedPayload { Tool = plan.Executable, ExitCode = exit, DurationMs = cmdSw.Elapsed.TotalMilliseconds });
                         if (exit != 0)
                         {
                             _log.WriteRaw($"==> {spec.Name} FAILED (exit {exit})");
@@ -442,7 +472,7 @@ public sealed class Executor
                                     Status = BuildEventStatus.Failure,
                                     DurationMs = sw.Elapsed.TotalMilliseconds,
                                     Reason = $"exit {exit}",
-                                    OutputTail = outputBuffer.Drain(),
+                                    OutputTail = RedactedTail(outputBuffer),
                                 });
                             records.Add(TargetExecutionRecord.Failed(spec.Name, sw.Elapsed, $"exit {exit}"));
                                         EmitTargetTerminal(targetSpan, spec, sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeFailure, $"exit {exit}");
@@ -483,7 +513,7 @@ public sealed class Executor
                         Status = BuildEventStatus.Failure,
                         DurationMs = sw.Elapsed.TotalMilliseconds,
                         Reason = $"{ex.GetType().Name}: {ex.Message}",
-                        OutputTail = outputBuffer.Drain(),
+                        OutputTail = RedactedTail(outputBuffer),
                     });
                 records.Add(TargetExecutionRecord.Failed(spec.Name, sw.Elapsed, ex.Message));
                 EmitTargetTerminal(targetSpan, spec, sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeFailure, $"{ex.GetType().Name}: {ex.Message}");

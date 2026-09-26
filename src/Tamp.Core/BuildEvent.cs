@@ -63,14 +63,21 @@ public sealed record BuildEvent
 /// <summary>
 /// Polymorphic base for <see cref="BuildEvent.Payload"/>. Derived records are keyed
 /// on the same discriminator strings as <see cref="BuildEvent.Type"/> (surfaced as
-/// <c>kind</c> in JSON). New payload types are added additively (see
-/// <see cref="BuildEventSchema"/>).
+/// <c>$type</c> inside the payload object; agents can switch on the top-level
+/// <see cref="BuildEvent.Type"/> without descending). New payload types are added
+/// additively (see <see cref="BuildEventSchema"/>).
 /// </summary>
-[JsonPolymorphic(TypeDiscriminatorPropertyName = "kind")]
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "$type")]
 [JsonDerivedType(typeof(BuildStartedPayload), BuildEventTypes.BuildStarted)]
 [JsonDerivedType(typeof(BuildFinishedPayload), BuildEventTypes.BuildFinished)]
 [JsonDerivedType(typeof(TargetStartedPayload), BuildEventTypes.TargetStarted)]
 [JsonDerivedType(typeof(TargetFinishedPayload), BuildEventTypes.TargetFinished)]
+[JsonDerivedType(typeof(ToolInvokedPayload), BuildEventTypes.ToolInvoked)]
+[JsonDerivedType(typeof(ToolExitedPayload), BuildEventTypes.ToolExited)]
+[JsonDerivedType(typeof(SecretAccessRequestedPayload), BuildEventTypes.SecretAccessRequested)]
+[JsonDerivedType(typeof(DiagnosticEmittedPayload), BuildEventTypes.DiagnosticEmitted)]
+[JsonDerivedType(typeof(ArtifactProducedPayload), BuildEventTypes.ArtifactProduced)]
+[JsonDerivedType(typeof(GateEvaluatedPayload), BuildEventTypes.GateEvaluated)]
 public abstract record BuildEventPayload;
 
 /// <summary><see cref="BuildEventTypes.BuildStarted"/> — emitted once at the top of a run.</summary>
@@ -124,4 +131,78 @@ public sealed record TargetFinishedPayload : BuildEventPayload
     public IReadOnlyList<string>? OutputTail { get; init; }
 
     // #12 extends this payload additively with outputs[] / inputsHash / remedy.
+}
+
+// ── Vocabulary expansion (#11). tool.* + secret.access.requested are emitted by
+// the executor at CommandPlan dispatch; diagnostic.emitted / artifact.produced /
+// gate.evaluated are defined + pinned here and emitted by their owning tickets
+// (#13 / #12 / #20).
+
+/// <summary><see cref="BuildEventTypes.ToolInvoked"/> — a child process is about to be spawned for a CommandPlan.</summary>
+public sealed record ToolInvokedPayload : BuildEventPayload
+{
+    public required string Tool { get; init; }
+
+    /// <summary>The command's arguments with registered secret values scrubbed via the redaction table. Non-secret args (paths, flags) are included — the agent stream is intentionally richer than the coarse ADR-0018 telemetry.</summary>
+    public required IReadOnlyList<string> ArgvRedacted { get; init; }
+
+    public string? Cwd { get; init; }
+}
+
+/// <summary><see cref="BuildEventTypes.ToolExited"/> — a spawned child process has exited.</summary>
+public sealed record ToolExitedPayload : BuildEventPayload
+{
+    public required string Tool { get; init; }
+    public required int ExitCode { get; init; }
+    public required double DurationMs { get; init; }
+}
+
+/// <summary><see cref="BuildEventTypes.SecretAccessRequested"/> — a CommandPlan declared a secret at dispatch. Carries the name + capability, NEVER the value.</summary>
+public sealed record SecretAccessRequestedPayload : BuildEventPayload
+{
+    public required string Name { get; init; }
+
+    /// <summary>The capability the access implies. `#11` emits <c>"secret.reveal"</c>; enriched by the capability model in #20.</summary>
+    public string? Capability { get; init; }
+}
+
+/// <summary>A source location for <see cref="DiagnosticEmittedPayload"/>.</summary>
+public sealed record DiagnosticLocation
+{
+    public required string File { get; init; }
+    public int? Line { get; init; }
+}
+
+/// <summary><see cref="BuildEventTypes.DiagnosticEmitted"/> — a SARIF-normalized diagnostic. Producer: #13. Defined + pinned here.</summary>
+public sealed record DiagnosticEmittedPayload : BuildEventPayload
+{
+    public required string RuleId { get; init; }
+
+    /// <summary>SARIF level: <c>none</c> | <c>note</c> | <c>warning</c> | <c>error</c>.</summary>
+    public required string Level { get; init; }
+
+    public DiagnosticLocation? Location { get; init; }
+    public required string Message { get; init; }
+    public string? FixHint { get; init; }
+}
+
+/// <summary><see cref="BuildEventTypes.ArtifactProduced"/> — a target produced an output. Producer: #12 (from Produces globs + hashes). Defined + pinned here.</summary>
+public sealed record ArtifactProducedPayload : BuildEventPayload
+{
+    public required string Path { get; init; }
+    public string? Hash { get; init; }
+    public string? Kind { get; init; }
+    public long? SizeBytes { get; init; }
+}
+
+/// <summary><see cref="BuildEventTypes.GateEvaluated"/> — a release/capability gate was evaluated. Producer: #20. Defined + pinned here.</summary>
+public sealed record GateEvaluatedPayload : BuildEventPayload
+{
+    public required string Gate { get; init; }
+
+    /// <summary><c>pass</c> | <c>fail</c>.</summary>
+    public required string Verdict { get; init; }
+
+    public bool Blocks { get; init; }
+    public string? Reason { get; init; }
 }
