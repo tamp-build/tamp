@@ -1,5 +1,14 @@
 namespace Tamp.NetCli.V8;
 
+/// <summary>Crash-dump verbosity for <c>--blame-crash-dump-type</c>.</summary>
+public enum DotNetTestCrashDumpType
+{
+    /// <summary>A minidump (small; thread stacks + basic state).</summary>
+    Mini,
+    /// <summary>A full process dump (large; complete heap).</summary>
+    Full,
+}
+
 public sealed class DotNetTestSettings : DotNetSettingsBase
 {
     public Configuration? Configuration { get; set; }
@@ -14,6 +23,13 @@ public sealed class DotNetTestSettings : DotNetSettingsBase
     public string? Framework { get; set; }
     public bool BlameHang { get; set; }
     public TimeSpan? BlameHangTimeout { get; set; }
+
+    /// <summary>Emit <c>--blame-crash</c>: on a test-host crash, write a sequence file naming the test in flight plus a crash dump.</summary>
+    public bool BlameCrash { get; set; }
+
+    /// <summary>Crash-dump verbosity (<c>--blame-crash-dump-type</c>). Null uses the SDK default.</summary>
+    public DotNetTestCrashDumpType? BlameCrashDumpType { get; set; }
+
     public Dictionary<string, string> Properties { get; } = new();
 
     /// <summary>
@@ -38,6 +54,8 @@ public sealed class DotNetTestSettings : DotNetSettingsBase
     public DotNetTestSettings SetFramework(string? tfm) { Framework = tfm; return this; }
     public DotNetTestSettings SetBlameHang(bool v) { BlameHang = v; return this; }
     public DotNetTestSettings SetBlameHangTimeout(TimeSpan? t) { BlameHangTimeout = t; return this; }
+    public DotNetTestSettings SetBlameCrash(bool v) { BlameCrash = v; return this; }
+    public DotNetTestSettings SetBlameCrashDumpType(DotNetTestCrashDumpType? t) { BlameCrashDumpType = t; if (t is not null) BlameCrash = true; return this; }
     public DotNetTestSettings SetProperty(string name, string value) { Properties[name] = value; return this; }
     public DotNetTestSettings SetVerbosity(DotNetVerbosity v) { Verbosity = v; return this; }
     public DotNetTestSettings SetWorkingDirectory(string? cwd) { WorkingDirectory = cwd; return this; }
@@ -59,6 +77,8 @@ public sealed class DotNetTestSettings : DotNetSettingsBase
         if (!string.IsNullOrEmpty(Framework)) { yield return "--framework"; yield return Framework!; }
         if (BlameHang) yield return "--blame-hang";
         if (BlameHangTimeout is { } t) { yield return "--blame-hang-timeout"; yield return $"{(int)t.TotalMilliseconds}ms"; }
+        if (BlameCrash) yield return "--blame-crash";
+        if (BlameCrashDumpType is { } dt) { yield return "--blame-crash-dump-type"; yield return dt.ToString().ToLowerInvariant(); }
         foreach (var (k, v) in Properties)
             yield return $"-p:{k}={v}";
     }
