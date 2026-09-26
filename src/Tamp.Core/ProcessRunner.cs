@@ -125,17 +125,25 @@ public static class ProcessRunner
         long stdoutBytes = 0, stderrBytes = 0;
 
         using var process = new Process { StartInfo = psi };
+
+        // stdout + stderr are read on separate threads (BeginOutputReadLine /
+        // BeginErrorReadLine) and typically write to the SAME sink (the executor
+        // passes one CapturingTextWriter as both). Those writers are single-threaded
+        // by contract, and one of them is the secret-redaction writer — so serialize
+        // the two handlers here. Per-line, so a secret can't be split across
+        // interleaved concurrent writes (TAM/#31).
+        var ioLock = new object();
         process.OutputDataReceived += (_, e) =>
         {
             if (e.Data is null) return;
             System.Threading.Interlocked.Add(ref stdoutBytes, System.Text.Encoding.UTF8.GetByteCount(e.Data) + System.Environment.NewLine.Length);
-            stdoutSink.WriteLine(e.Data);
+            lock (ioLock) stdoutSink.WriteLine(e.Data);
         };
         process.ErrorDataReceived += (_, e) =>
         {
             if (e.Data is null) return;
             System.Threading.Interlocked.Add(ref stderrBytes, System.Text.Encoding.UTF8.GetByteCount(e.Data) + System.Environment.NewLine.Length);
-            stderrSink.WriteLine(e.Data);
+            lock (ioLock) stderrSink.WriteLine(e.Data);
         };
         process.Start();
         process.BeginOutputReadLine();
