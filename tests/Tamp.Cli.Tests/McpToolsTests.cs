@@ -83,6 +83,51 @@ public sealed class McpToolsTests
         Assert.Contains("error", tools.GetResult("Push"));
     }
 
+    [Fact]
+    public void RunTarget_Passes_CaptureLogs_And_GetLog_Reads_The_File()
+    {
+        // #23: run_target opts into --capture-logs; get_log prefers the full per-target log file
+        // (addressed by target.finished.logPath) over the event tail.
+        var buildId = Guid.NewGuid().ToString("N");
+        var rel = $".tamp/logs/{buildId}/Push.log";
+        var full = Path.Combine(TampBuild.RootDirectory.Value, rel);
+        Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+        File.WriteAllText(full, "COMPILER-OUTPUT-LINE-1\nCOMPILER-OUTPUT-LINE-2\n");
+
+        try
+        {
+            var sawCaptureFlag = false;
+            var inv = new FakeInvoker
+            {
+                Handler = args =>
+                {
+                    var list = args.ToList();
+                    sawCaptureFlag = list.Contains("--capture-logs");
+                    var ei = list.IndexOf("--events");
+                    if (ei >= 0 && ei + 1 < list.Count)
+                        File.WriteAllLines(list[ei + 1], new[]
+                        {
+                            BuildEventJson.Serialize(Ev(BuildEventTypes.TargetFinished, "Push",
+                                new TargetFinishedPayload { Target = "Push", Status = BuildEventStatus.Success, LogPath = rel })),
+                        });
+                    return (0, "", "");
+                },
+            };
+            var tools = new TampMcpTools(inv);
+
+            tools.RunTarget("Push", allowSideEffects: true);
+            Assert.True(sawCaptureFlag);   // run_target requested log capture
+
+            var log = tools.GetLog("Push");
+            Assert.Contains("COMPILER-OUTPUT-LINE-1", log);   // the full file, not just the tail
+            Assert.Contains(buildId, log);                    // logPath echoed
+        }
+        finally
+        {
+            try { Directory.Delete(Path.GetDirectoryName(full)!, recursive: true); } catch { }
+        }
+    }
+
     private static BuildEvent Ev(string type, string target, BuildEventPayload payload) => new()
     {
         Type = type, BuildId = "b", RunId = "r", TraceId = "b", SpanId = "0123456789abcdef",

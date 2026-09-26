@@ -69,6 +69,12 @@ public sealed class Executor
     private HashCache? _hashCache;
     private string? _currentInputsHash;   // computed once per target (start), reused at terminal
     private bool? _currentWouldSkip;       // advisory: inputs matched last successful run
+    // #23 agent economics: opt-in per-target log capture (tee target output to a redacted
+    // .tamp/logs/<buildId>/<target>.log so an agent can fetch one failing log lazily).
+    private readonly bool _captureLogs;
+    private string? _currentLogPath;       // worktree-rel path of the current target's log (capture on + ran)
+    // #23: reproduce command per failed target, for the compact failure summary.
+    private readonly Dictionary<string, string> _failureReproduce = new(StringComparer.Ordinal);
 
     public Executor(
         TargetGraph graph,
@@ -85,7 +91,8 @@ public sealed class Executor
         IReadOnlySet<string>? runOnly = null,
         IReadOnlyList<string>? ruleFilters = null,
         bool cacheAdvice = false,
-        AbsolutePath? hashCachePath = null)
+        AbsolutePath? hashCachePath = null,
+        bool captureLogs = false)
     {
         _capabilityMode = capabilityMode;
         _allowSideEffects = allowSideEffects;
@@ -93,6 +100,7 @@ public sealed class Executor
         _ruleFilters = ruleFilters ?? Array.Empty<string>();
         _cacheAdvice = cacheAdvice;
         _hashCachePath = hashCachePath;
+        _captureLogs = captureLogs;
         Graph = graph ?? throw new ArgumentNullException(nameof(graph));
         Mode = mode;
         Output = output ?? Console.Out;
@@ -157,12 +165,16 @@ public sealed class Executor
                 Outputs = outputs,
                 InputsHash = _currentInputsHash,
                 WouldSkip = _currentWouldSkip,
+                LogPath = _currentLogPath,
             });
     }
 
     /// <summary>Emit a failure target.finished with a structured remedy (reproduce + hint + coarse class) and InputsHash.</summary>
     private void EmitTargetFailure(TargetSpec spec, string targetSpanId, TimeSpan elapsed, string reason, bool isRequiresFailure, IReadOnlyList<string>? outputTail)
-        => Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
+    {
+        var reproduce = ReproduceCommand(spec.Name);
+        _failureReproduce[spec.Name] = reproduce;   // #23: feed the compact failure summary
+        Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
             new TargetFinishedPayload
             {
                 Target = spec.Name,
@@ -172,13 +184,15 @@ public sealed class Executor
                 OutputTail = outputTail,
                 InputsHash = _currentInputsHash,
                 WouldSkip = _currentWouldSkip,
+                LogPath = _currentLogPath,
                 Remedy = new TargetRemedy
                 {
                     Class = isRequiresFailure ? "config" : "code",
-                    Reproduce = ReproduceCommand(spec.Name),
+                    Reproduce = reproduce,
                     Hint = reason,
                 },
             });
+    }
 
     /// <summary>
     /// Capability gate (#20): for a <see cref="CapabilityTier.SideEffectful"/> tier, emit a
@@ -267,6 +281,33 @@ public sealed class Executor
     {
         try { return Path.GetRelativePath(TampBuild.RootDirectory.Value, file.Value).Replace('\\', '/'); }
         catch { return file.Value; }
+    }
+
+    /// <summary>
+    /// #23: open a redacted per-target log at <c>.tamp/logs/&lt;buildId&gt;/&lt;target&gt;.log</c>.
+    /// The <see cref="RedactingTextWriter"/> wraps the file stream so secrets never reach disk.
+    /// Best-effort: returns null (capture silently off for this target) if the file can't be opened.
+    /// </summary>
+    private (StreamWriter Stream, RedactingTextWriter Writer, string RelPath)? OpenTargetLog(string targetName)
+    {
+        try
+        {
+            var dir = (TampBuild.RootDirectory / ".tamp" / "logs" / _buildId).CreateDirectory();
+            var file = dir / (SanitizeLogName(targetName) + ".log");
+            var stream = new StreamWriter(file.Value, append: false, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            var writer = new RedactingTextWriter(stream, _redactionTable);
+            return (stream, writer, RelativeToRoot(file));
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Make a target name safe as a filename (targets are usually identifiers; be defensive about odd names).</summary>
+    private static string SanitizeLogName(string name)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var chars = name.Select(c => Array.IndexOf(invalid, c) >= 0 ? '_' : c).ToArray();
+        var safe = new string(chars);
+        return string.IsNullOrWhiteSpace(safe) ? "target" : safe;
     }
 
     private static string InferKind(string extension) => extension.ToLowerInvariant() switch
@@ -504,6 +545,7 @@ public sealed class Executor
             // never actually skip.
             _currentInputsHash = SafeInputsHash(spec);
             _currentWouldSkip = null;
+            _currentLogPath = null;   // #23: set only if this target actually runs with capture on
             if (_cacheAdvice && _hashCache is not null && _currentInputsHash is not null)
             {
                 _currentWouldSkip = _hashCache.Get(spec.Name) == _currentInputsHash;
@@ -626,7 +668,16 @@ public sealed class Executor
             // the TargetFailureDetail. Inline writes via _log.WriteRaw bypass this
             // (they're framework prose, not target output).
             var outputBuffer = new TargetOutputBuffer();
-            var capturingOutput = new CapturingTextWriter(_redactedOutput, outputBuffer);
+
+            // #23: when --capture-logs is on, tee this target's output to a redacted per-target
+            // log file (in addition to the console). Each sink redacts independently; the file
+            // never sees a secret. Best-effort — a failed open just disables capture for this target.
+            var logHandle = _captureLogs ? OpenTargetLog(spec.Name) : null;
+            _currentLogPath = logHandle?.RelPath;
+            var innerWriter = logHandle is { } h
+                ? (TextWriter)new TeeTextWriter(_redactedOutput, h.Writer)
+                : _redactedOutput;
+            var capturingOutput = new CapturingTextWriter(innerWriter, outputBuffer);
 
             // ── Diagnostics: per-target span (ADR 0018). Tags are populated at known points;
             // status is set on the activity at end of try/catch.
@@ -752,6 +803,13 @@ public sealed class Executor
             }
 
             nextSpec:;
+
+            // #23: flush + close this target's log file on every exit path (success, failure, block, throw).
+            if (logHandle is { } lh)
+            {
+                try { lh.Writer.Flush(); } catch { }
+                try { lh.Stream.Dispose(); } catch { }
+            }
         }
 
         // Between targets / at build end, ambient events parent to the build span.
@@ -763,6 +821,7 @@ public sealed class Executor
 
         buildSw.Stop();
         WriteBuildSummary(records, buildSw.Elapsed, buildFailedAt?.Name);
+        WriteCompactFailureSummary(records);
         _log.Flush();
 
         var traversed = records.Count(r => r.Status is not TargetStatus.NotRun);
@@ -937,6 +996,26 @@ public sealed class Executor
         {
             _log.WriteRaw();
             _log.WriteRaw($"BUILD FAILED — first failed target: {failedTargetName}");
+        }
+    }
+
+    /// <summary>
+    /// #23 agent economics: after the summary table, print a terse, always-on block listing
+    /// only the failed targets, each with its reason and #12 <c>remedy.reproduce</c>. This is the
+    /// actionable bit an agent needs without re-reading the whole table or output stream.
+    /// </summary>
+    private void WriteCompactFailureSummary(IReadOnlyList<TargetExecutionRecord> records)
+    {
+        var failures = records.Where(r => r.Status == TargetStatus.Failed).ToList();
+        if (failures.Count == 0) return;
+
+        _log.WriteRaw();
+        _log.WriteRaw($"FAILED ({failures.Count}):");
+        foreach (var f in failures)
+        {
+            _log.WriteRaw($"  {f.Name} — {f.FailureReason}");
+            if (_failureReproduce.TryGetValue(f.Name, out var reproduce))
+                _log.WriteRaw($"      reproduce: {reproduce}");
         }
     }
 

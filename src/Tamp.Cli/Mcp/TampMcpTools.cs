@@ -50,7 +50,9 @@ internal sealed class TampMcpTools
     public string RunTarget(string target, bool allowSideEffects = false)
     {
         var eventsFile = Path.Combine(Path.GetTempPath(), $"tamp-mcp-{Guid.NewGuid():N}.ndjson");
-        var args = new List<string> { target, "--enforce", "agent", "--reporter", "json", "--events", eventsFile };
+        // #23: --capture-logs so get_log can lazily fetch the one failing target's full log
+        // from .tamp/logs/<buildId>/<target>.log instead of holding the whole output stream.
+        var args = new List<string> { target, "--enforce", "agent", "--reporter", "json", "--events", eventsFile, "--capture-logs" };
         if (allowSideEffects) args.Add("--allow-side-effects");
 
         var (exit, _, stderr) = _invoker.Run(args);
@@ -84,28 +86,50 @@ internal sealed class TampMcpTools
     }
 
     /// <summary>
-    /// The per-target log from the last <see cref="RunTarget"/>: the tool invocations and, on
-    /// failure, the captured output tail. (Full addressable per-(buildId,targetId) log storage
-    /// is #23; this returns what the last run captured.)
+    /// The per-target log from the last <see cref="RunTarget"/> (#23 agent economics). Prefers the
+    /// full addressable per-target log file (<c>.tamp/logs/&lt;buildId&gt;/&lt;target&gt;.log</c>, redacted)
+    /// captured under <c>--capture-logs</c>; falls back to the event-derived tool list + failure tail
+    /// when no file was captured. Lets an agent fetch one failing log lazily rather than hold the stream.
     /// </summary>
     public string GetLog(string target)
     {
         var forTarget = _lastRunEvents.Where(e => e.TargetId == target).ToList();
         if (forTarget.Count == 0) return JsonSerializer.Serialize(new { error = $"no log for '{target}' — run_target first" }, Json);
 
+        var finished = forTarget.LastOrDefault(e => e.Type == BuildEventTypes.TargetFinished)?.Payload as TargetFinishedPayload;
+
+        // #23: prefer the full captured log file when present.
+        if (finished?.LogPath is { } rel && ResolveWorktreePath(rel) is { } full && File.Exists(full))
+        {
+            try
+            {
+                return JsonSerializer.Serialize(new { target, logPath = rel, log = File.ReadAllText(full) }, Json);
+            }
+            catch { /* fall through to the event tail */ }
+        }
+
         var tools = forTarget.Where(e => e.Type == BuildEventTypes.ToolExited && e.Payload is ToolExitedPayload)
             .Select(e => (ToolExitedPayload)e.Payload)
             .Select(p => new { tool = p.Tool, exitCode = p.ExitCode, durationMs = p.DurationMs })
             .ToList();
-        var finished = forTarget.LastOrDefault(e => e.Type == BuildEventTypes.TargetFinished)?.Payload as TargetFinishedPayload;
 
         return JsonSerializer.Serialize(new
         {
             target,
             tools,
             outputTail = finished?.OutputTail,
-            note = "per-(buildId,targetId) addressable log storage is tracked in #23; this is the last run's capture.",
+            logPath = finished?.LogPath,
+            note = "no captured log file (run without --capture-logs, or it was unavailable); showing the last run's event tail.",
         }, Json);
+    }
+
+    /// <summary>Resolve a worktree-relative log path against the build root (best-effort; falls back to the current directory).</summary>
+    private static string? ResolveWorktreePath(string relative)
+    {
+        try { return Path.Combine(TampBuild.RootDirectory.Value, relative); }
+        catch { }
+        try { return Path.Combine(Directory.GetCurrentDirectory(), relative); }
+        catch { return null; }
     }
 
     private static IReadOnlyList<BuildEvent> ReadEvents(string path)
