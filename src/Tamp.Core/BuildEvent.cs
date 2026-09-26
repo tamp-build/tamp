@@ -130,7 +130,42 @@ public sealed record TargetFinishedPayload : BuildEventPayload
     /// <summary>Last N lines of merged stdout+stderr before a failure (from the target output ring buffer). Empty otherwise.</summary>
     public IReadOnlyList<string>? OutputTail { get; init; }
 
-    // #12 extends this payload additively with outputs[] / inputsHash / remedy.
+    // ── #12 typed-result fields (framework-synthesized; additive). ──
+
+    /// <summary>Produced artifacts, synthesized on success from the target's <c>Produces</c> globs (path + hash + kind + size). Null when the target declares none.</summary>
+    public IReadOnlyList<ArtifactInfo>? Outputs { get; init; }
+
+    /// <summary>The target's input hash when an <c>InputHash</c> producer is declared. Observability-only (no execution effect) — the migration primitive toward cache-aware execution (#17). Null otherwise.</summary>
+    public string? InputsHash { get; init; }
+
+    /// <summary>On failure, the structured remedy an agent can act on (reproduce command + hint + coarse class). Null on success.</summary>
+    public TargetRemedy? Remedy { get; init; }
+}
+
+/// <summary>A produced artifact (a plain nested record; mirrors <see cref="ArtifactProducedPayload"/>'s shape for the <see cref="TargetFinishedPayload.Outputs"/> list).</summary>
+public sealed record ArtifactInfo
+{
+    public required string Path { get; init; }
+    public string? Hash { get; init; }
+    public string? Kind { get; init; }
+    public long? SizeBytes { get; init; }
+}
+
+/// <summary>
+/// Structured, agent-actionable remedy for a failed target (#12). <see cref="Reproduce"/>
+/// and <see cref="Hint"/> are reliably synthesized; <see cref="Class"/> is a coarse
+/// heuristic (<c>config</c> / <c>code</c>) refinable by wrapper-contributed hints later.
+/// </summary>
+public sealed record TargetRemedy
+{
+    /// <summary>Coarse class: <c>transient</c> | <c>config</c> | <c>code</c> | <c>policy</c>. Heuristic in #12.</summary>
+    public required string Class { get; init; }
+
+    /// <summary>A command that re-runs the failure, e.g. <c>tamp Compile</c>.</summary>
+    public required string Reproduce { get; init; }
+
+    /// <summary>Human/agent-readable hint (the failure reason).</summary>
+    public string? Hint { get; init; }
 }
 
 // ── Vocabulary expansion (#11). tool.* + secret.access.requested are emitted by
