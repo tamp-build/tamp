@@ -42,7 +42,7 @@ public sealed class Executor
     // and this dual path removed — in #0c.
     private readonly IBuildEventSink _sink;
     private readonly string _runId = Guid.NewGuid().ToString("N");
-    private readonly string _workerId = WorkerIdResolver.Resolve();
+    private readonly string _workerId = WorkerIdResolver.ResolveDefault();
     private long _seq;
     private string _buildId = Guid.NewGuid().ToString("N");
     private string _traceId = string.Empty;

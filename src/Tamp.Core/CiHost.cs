@@ -179,6 +179,9 @@ public sealed class AzureDevOpsHost : CiHost
     public string? PullRequestId => _env("SYSTEM_PULLREQUEST_PULLREQUESTID");
     public string? PullRequestTargetBranch => _env("SYSTEM_PULLREQUEST_TARGETBRANCH");
 
+    /// <summary>The identity that requested (triggered) the build — the CI actor for attribution (#19).</summary>
+    public string? RequestedFor => _env("BUILD_REQUESTEDFOR");
+
     public bool IsPullRequest => !string.IsNullOrEmpty(PullRequestId);
 
     public override void OpenGroup(string name) => Writer.WriteLine($"##[group]{name}");
