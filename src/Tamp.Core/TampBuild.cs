@@ -438,6 +438,24 @@ public abstract partial class TampBuild
                 return 0;
             }
 
+            // #15: `--from X` / `--downstream X` — run X plus its transitive dependents
+            // (downstream slice), skipping external upstream as assumed-satisfied. Overrides
+            // the parsed target set (X arrives as the flag value, not a target).
+            IReadOnlySet<string>? runOnly = null;
+            var fromTarget = ResolveFromTarget(args);
+            if (fromTarget is not null)
+            {
+                if (!targets.ContainsKey(fromTarget))
+                {
+                    Console.Error.WriteLine($"tamp: --from target '{fromTarget}' is not a known target.");
+                    Console.Error.WriteLine("      Use `--list` to see available targets.");
+                    return 2;
+                }
+                var slice = graph.DependentsClosure(fromTarget);
+                targetNames = slice;
+                runOnly = new HashSet<string>(slice, StringComparer.Ordinal);
+            }
+
             if (targetNames.Count == 0)
             {
                 Console.Error.WriteLine("No target specified and no `.Default()`-marked target, `Default`-named target, or `Ci`-named target found.");
@@ -446,7 +464,8 @@ public abstract partial class TampBuild
             }
 
             // Refuse direct invocation of Internal targets with a friendly error.
-            foreach (var requested in targetNames)
+            // The --from slice legitimately includes internal dependents, so it's exempt.
+            foreach (var requested in fromTarget is null ? targetNames : Array.Empty<string>())
             {
                 if (targets.TryGetValue(requested, out var spec) && spec.IsInternal)
                 {
@@ -534,7 +553,8 @@ public abstract partial class TampBuild
                 reporter: reporter,
                 eventSink: eventSink,
                 capabilityMode: capabilityMode,
-                allowSideEffects: allowSideEffects);
+                allowSideEffects: allowSideEffects,
+                runOnly: runOnly);
             return executor.Run(targetNames.ToArray()).ExitCode;
         }
         catch (InvalidOperationException ex)
@@ -582,6 +602,34 @@ public abstract partial class TampBuild
         }
         var env = getEnv("TAMP_EVENTS");
         return string.IsNullOrWhiteSpace(env) ? null : env;
+    }
+
+    /// <summary>
+    /// Resolve the #15 downstream slice root: <c>--from X</c> / <c>--from=X</c>
+    /// (alias <c>--downstream</c>). Returns X or null. A cheap pre-scan so
+    /// <see cref="ParseInvocation"/> is untouched (the flag's value is already skipped
+    /// from target parsing by the unknown-flag handling).
+    /// </summary>
+    internal static string? ResolveFromTarget(string[] args)
+    {
+        for (var i = 0; i < args.Length; i++)
+        {
+            var a = args[i];
+            foreach (var flag in new[] { "--from", "--downstream" })
+            {
+                if (a.StartsWith(flag + "=", StringComparison.Ordinal))
+                {
+                    var v = a[(flag.Length + 1)..];
+                    if (!string.IsNullOrWhiteSpace(v)) return v;
+                }
+                else if (a == flag && i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+                {
+                    var v = args[i + 1];
+                    if (!string.IsNullOrWhiteSpace(v)) return v;
+                }
+            }
+        }
+        return null;
     }
 
     /// <summary>

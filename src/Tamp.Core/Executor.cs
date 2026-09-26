@@ -55,6 +55,9 @@ public sealed class Executor
     // #20 capability enforcement.
     private readonly CapabilityMode _capabilityMode;
     private readonly bool _allowSideEffects;
+    // #15 --from: when set, only these targets run; others in the order are
+    // external upstream, assumed satisfied (fail-closed on their declared Produces).
+    private readonly IReadOnlySet<string>? _runOnly;
 
     public Executor(
         TargetGraph graph,
@@ -67,10 +70,12 @@ public sealed class Executor
         IBuildReporter? reporter = null,
         IBuildEventSink? eventSink = null,
         CapabilityMode capabilityMode = CapabilityMode.Off,
-        bool allowSideEffects = false)
+        bool allowSideEffects = false,
+        IReadOnlySet<string>? runOnly = null)
     {
         _capabilityMode = capabilityMode;
         _allowSideEffects = allowSideEffects;
+        _runOnly = runOnly;
         Graph = graph ?? throw new ArgumentNullException(nameof(graph));
         Mode = mode;
         Output = output ?? Console.Out;
@@ -168,6 +173,19 @@ public sealed class Executor
         Emit(BuildEventTypes.GateEvaluated, targetName, NewSpanId(), targetSpanId,
             new GateEvaluatedPayload { Gate = "capability", Verdict = blocked ? "fail" : "pass", Blocks = blocked, Reason = reason });
         return blocked;
+    }
+
+    /// <summary>#15 fail-closed: the target's declared Produces globs that currently match no file on disk. Empty when it declares none (can't verify).</summary>
+    private static IReadOnlyList<string> MissingDeclaredArtifacts(TargetSpec spec)
+    {
+        if (spec.ProducedGlobs.Count == 0) return Array.Empty<string>();
+        var missing = new List<string>();
+        foreach (var glob in spec.ProducedGlobs)
+        {
+            try { if (TampBuild.RootDirectory.GlobFiles(glob).Count == 0) missing.Add(glob); }
+            catch { missing.Add(glob); }
+        }
+        return missing;
     }
 
     /// <summary>The target's input hash when it declared one; observability-only (#17 migration primitive). Null / best-effort otherwise.</summary>
@@ -439,6 +457,35 @@ public sealed class Executor
                 Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
                     new TargetFinishedPayload { Target = spec.Name, Status = BuildEventStatus.NotRun, Reason = "build already failed" });
                 records.Add(TargetExecutionRecord.NotRun(spec.Name));
+                continue;
+            }
+
+            // #15 --from slice: a target outside the run set is external upstream,
+            // assumed satisfied. Fail-closed — verify its declared Produces artifacts
+            // exist on disk before skipping; a declared-but-missing artifact fails the build.
+            if (_runOnly is not null && !_runOnly.Contains(spec.Name))
+            {
+                var missing = MissingDeclaredArtifacts(spec);
+                if (missing.Count > 0)
+                {
+                    var reason = $"--from fail-closed: '{spec.Name}' is upstream of the slice but its declared artifact(s) are missing: {string.Join(", ", missing)}";
+                    _log.WriteRaw($"==> {spec.Name} FAIL-CLOSED ({reason})");
+                    EmitTargetFailure(spec, targetSpanId, TimeSpan.Zero, reason, isRequiresFailure: false, outputTail: null);
+                    records.Add(TargetExecutionRecord.Failed(spec.Name, TimeSpan.Zero, reason));
+                    if (!buildFailedAt.HasValue)
+                    {
+                        buildFailedAt = (spec.Name, 1);
+                        handlersInvoked.AddRange(DispatchFailureHandlers(spec.Name));
+                    }
+                    continue;
+                }
+                const string satisfied = "assumed satisfied (outside --from slice)";
+                _log.WriteRaw($"==> {spec.Name} ({satisfied})");
+                Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
+                    new TargetFinishedPayload { Target = spec.Name, Status = BuildEventStatus.Skipped, Reason = satisfied });
+                skipped.Add(spec.Name);
+                records.Add(TargetExecutionRecord.Skipped(spec.Name, satisfied));
+                DiagnosticsProjection.EmitSkipped(spec, satisfied);
                 continue;
             }
 

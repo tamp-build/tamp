@@ -83,6 +83,30 @@ public sealed class TargetGraph
     }
 
     /// <summary>
+    /// The downstream slice for <paramref name="name"/> (#15): <paramref name="name"/> plus
+    /// every target that transitively <c>DependsOn</c> it. Pure graph traversal (reverse
+    /// dependency edges) — no hashing. Powers <c>--from</c> / <c>--downstream</c>.
+    /// </summary>
+    public IReadOnlyList<string> DependentsClosure(string name)
+    {
+        if (!_targets.ContainsKey(name))
+            throw new InvalidOperationException(
+                $"Target '{name}' not found. Known: {string.Join(", ", _targets.Keys.OrderBy(n => n))}");
+
+        var result = new HashSet<string>(StringComparer.Ordinal) { name };
+        var queue = new Queue<string>();
+        queue.Enqueue(name);
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            foreach (var (other, spec) in _targets)
+                if (spec.Dependencies.Contains(current, StringComparer.Ordinal) && result.Add(other))
+                    queue.Enqueue(other);
+        }
+        return result.ToList();
+    }
+
+    /// <summary>
     /// Failure handlers registered for <paramref name="failedTargetName"/>.
     /// These are NOT part of the regular plan; the executor invokes them
     /// (and their own dep trees) only when the named target actually fails.
