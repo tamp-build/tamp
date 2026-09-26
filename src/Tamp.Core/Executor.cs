@@ -58,6 +58,11 @@ public sealed class Executor
     // #15 --from: when set, only these targets run; others in the order are
     // external upstream, assumed satisfied (fail-closed on their declared Produces).
     private readonly IReadOnlySet<string>? _runOnly;
+    // #16 --rule: active in-target rule filters, echoed into remedy.reproduce.
+    private readonly IReadOnlyList<string> _ruleFilters;
+    // #16: distinct error-level diagnostic ruleIds emitted during the current target,
+    // used to infer a rule-scoped reproduce command. Reset per target.
+    private readonly HashSet<string> _currentTargetErrorRules = new(StringComparer.Ordinal);
 
     public Executor(
         TargetGraph graph,
@@ -71,11 +76,13 @@ public sealed class Executor
         IBuildEventSink? eventSink = null,
         CapabilityMode capabilityMode = CapabilityMode.Off,
         bool allowSideEffects = false,
-        IReadOnlySet<string>? runOnly = null)
+        IReadOnlySet<string>? runOnly = null,
+        IReadOnlyList<string>? ruleFilters = null)
     {
         _capabilityMode = capabilityMode;
         _allowSideEffects = allowSideEffects;
         _runOnly = runOnly;
+        _ruleFilters = ruleFilters ?? Array.Empty<string>();
         Graph = graph ?? throw new ArgumentNullException(nameof(graph));
         Mode = mode;
         Output = output ?? Console.Out;
@@ -152,7 +159,7 @@ public sealed class Executor
                 Remedy = new TargetRemedy
                 {
                     Class = isRequiresFailure ? "config" : "code",
-                    Reproduce = $"tamp {spec.Name}",
+                    Reproduce = ReproduceCommand(spec.Name),
                     Hint = reason,
                 },
             });
@@ -173,6 +180,20 @@ public sealed class Executor
         Emit(BuildEventTypes.GateEvaluated, targetName, NewSpanId(), targetSpanId,
             new GateEvaluatedPayload { Gate = "capability", Verdict = blocked ? "fail" : "pass", Blocks = blocked, Reason = reason });
         return blocked;
+    }
+
+    /// <summary>
+    /// #16: the reproduce command for a failed target. Echoes active <c>--rule</c> filters;
+    /// else, if the target emitted exactly one distinct error-level diagnostic ruleId, scopes
+    /// to it; else re-runs the whole target.
+    /// </summary>
+    private string ReproduceCommand(string targetName)
+    {
+        if (_ruleFilters.Count > 0)
+            return $"tamp {targetName} " + string.Join(" ", _ruleFilters.Select(r => $"--rule {r}"));
+        if (_currentTargetErrorRules.Count == 1)
+            return $"tamp {targetName} --rule {_currentTargetErrorRules.First()}";
+        return $"tamp {targetName}";
     }
 
     /// <summary>#15 fail-closed: the target's declared Produces globs that currently match no file on disk. Empty when it declares none (can't verify).</summary>
@@ -435,7 +456,14 @@ public sealed class Executor
         // Activate the ambient emitter (#13) so target bodies / helpers can emit
         // diagnostic.emitted / artifact.produced (#12) parented to the current target span.
         using var ambientScope = BuildEvents.Activate(new BuildEventScope((type, payload) =>
-            Emit(type, _currentTargetId, NewSpanId(), _currentTargetSpanId ?? _buildSpanId, payload)));
+        {
+            // #16: remember error-level diagnostic ruleIds for the current target so a
+            // rule-scoped remedy.reproduce can be inferred.
+            if (type == BuildEventTypes.DiagnosticEmitted && payload is DiagnosticEmittedPayload d
+                && d.Level == "error" && !string.IsNullOrEmpty(d.RuleId))
+                _currentTargetErrorRules.Add(d.RuleId);
+            Emit(type, _currentTargetId, NewSpanId(), _currentTargetSpanId ?? _buildSpanId, payload);
+        }));
 
         // ── Diagnostics: root build span (ADR 0018) — annotated via the projection (#0c).
         using var buildSpan = TampDiagnostics.BuildSource.StartActivity("build", ActivityKind.Internal);
@@ -449,6 +477,7 @@ public sealed class Executor
             // Point ambient events (#13) at this target's span for the iteration.
             _currentTargetId = spec.Name;
             _currentTargetSpanId = targetSpanId;
+            _currentTargetErrorRules.Clear();   // #16: per-target diagnostic-rule tracking
 
             // After a failure, only AssuredAfterFailure targets keep running.
             if (buildFailedAt.HasValue && !spec.AssuredAfterFailure)

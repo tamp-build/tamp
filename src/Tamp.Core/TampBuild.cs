@@ -27,6 +27,15 @@ public abstract partial class TampBuild
     /// </summary>
     protected static bool IsServerBuild => !IsLocalBuild;
 
+    private static IReadOnlyList<string> _ruleFilter = Array.Empty<string>();
+
+    /// <summary>
+    /// The active <c>--rule</c> filters (#16). Build/target code reads these to scope its tool to
+    /// specific diagnostic rules where the tool supports it (degrade gracefully otherwise); empty
+    /// when no <c>--rule</c> was passed. Orthogonal to target selection.
+    /// </summary>
+    public static IReadOnlyList<string> RuleFilter => _ruleFilter;
+
     private static AbsolutePath? _rootDirectoryCache;
 
     /// <summary>
@@ -342,6 +351,9 @@ public abstract partial class TampBuild
             // authoritative flag parse happens later in ParseInvocation.
             var listOnly = IsListOnlyInvocation(args);
 
+            // #16: resolve --rule filters early so target-authoring code can read RuleFilter.
+            _ruleFilter = ResolveRuleFilters(args);
+
             // Parameter binding happens before target discovery so that any
             // [Parameter] reads inside a target's authoring lambda see the
             // resolved values.
@@ -554,7 +566,8 @@ public abstract partial class TampBuild
                 eventSink: eventSink,
                 capabilityMode: capabilityMode,
                 allowSideEffects: allowSideEffects,
-                runOnly: runOnly);
+                runOnly: runOnly,
+                ruleFilters: _ruleFilter);
             return executor.Run(targetNames.ToArray()).ExitCode;
         }
         catch (InvalidOperationException ex)
@@ -602,6 +615,27 @@ public abstract partial class TampBuild
         }
         var env = getEnv("TAMP_EVENTS");
         return string.IsNullOrWhiteSpace(env) ? null : env;
+    }
+
+    /// <summary>Resolve the #16 <c>--rule &lt;id&gt;</c> / <c>--rule=&lt;id&gt;</c> filters (repeatable). Cheap pre-scan; <see cref="ParseInvocation"/> untouched.</summary>
+    internal static IReadOnlyList<string> ResolveRuleFilters(string[] args)
+    {
+        var rules = new List<string>();
+        for (var i = 0; i < args.Length; i++)
+        {
+            var a = args[i];
+            if (a.StartsWith("--rule=", StringComparison.Ordinal))
+            {
+                var v = a["--rule=".Length..];
+                if (!string.IsNullOrWhiteSpace(v)) rules.Add(v);
+            }
+            else if (a == "--rule" && i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                var v = args[i + 1];
+                if (!string.IsNullOrWhiteSpace(v)) rules.Add(v);
+            }
+        }
+        return rules;
     }
 
     /// <summary>
