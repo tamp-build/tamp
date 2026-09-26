@@ -14,7 +14,11 @@
   </ItemGroup>
 
   <ItemGroup Label="Source link">
-    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="8.0.0" />
+    <!-- Bumped 8.0.0 -> 10.0.401 (TAM/#25): SourceLink 8.0.0 pulled Microsoft.Build.Tasks.Git 8.0.0,
+         which carries advisory GHSA-23fw-v26w-5fgq (NU1902). With transitive pinning + NuGet audit
+         + TreatWarningsAsErrors that failed restore on every project. 10.0.401 is the current stable
+         line and pulls Build.Tasks.Git 10.0.401, clearing the advisory. -->
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.401" />
   </ItemGroup>
 
   <ItemGroup Label="Cross-repo Tamp packages — wrappers consumed from their own satellite repos. The Wave 1+2 security chain was split out of this monorepo in TAM-254; from 1.12.0 onward the security wrappers are PackageReferences from their satellites, and Tamp.Security.Pipeline references them the same way.">
