@@ -47,6 +47,11 @@ public sealed class Executor
     private string _buildId = Guid.NewGuid().ToString("N");
     private string _traceId = string.Empty;
     private string _buildSpanId = string.Empty;
+    // Current target context for ambient events (#13, BuildEvents). Updated per
+    // iteration so a diagnostic/artifact emitted from a target body parents to
+    // that target's span; null between targets (ambient events parent to the build span).
+    private string? _currentTargetId;
+    private string? _currentTargetSpanId;
 
     public Executor(
         TargetGraph graph,
@@ -287,6 +292,11 @@ public sealed class Executor
                 Worktree = SafeWorktree(),
             });
 
+        // Activate the ambient emitter (#13) so target bodies / helpers can emit
+        // diagnostic.emitted / artifact.produced (#12) parented to the current target span.
+        using var ambientScope = BuildEvents.Activate(new BuildEventScope((type, payload) =>
+            Emit(type, _currentTargetId, NewSpanId(), _currentTargetSpanId ?? _buildSpanId, payload)));
+
         // ── Diagnostics: root build span (ADR 0018) — annotated via the projection (#0c).
         using var buildSpan = TampDiagnostics.BuildSource.StartActivity("build", ActivityKind.Internal);
         DiagnosticsProjection.AnnotateBuildStart(buildSpan, order.Select(s => s.Name).ToList(), ProjectInfo);
@@ -296,6 +306,9 @@ public sealed class Executor
         {
             // One span id per target iteration; shared by its started + finished events.
             var targetSpanId = NewSpanId();
+            // Point ambient events (#13) at this target's span for the iteration.
+            _currentTargetId = spec.Name;
+            _currentTargetSpanId = targetSpanId;
 
             // After a failure, only AssuredAfterFailure targets keep running.
             if (buildFailedAt.HasValue && !spec.AssuredAfterFailure)
@@ -496,6 +509,10 @@ public sealed class Executor
 
             nextSpec:;
         }
+
+        // Between targets / at build end, ambient events parent to the build span.
+        _currentTargetId = null;
+        _currentTargetSpanId = null;
 
         buildSw.Stop();
         WriteBuildSummary(records, buildSw.Elapsed, buildFailedAt?.Name);
