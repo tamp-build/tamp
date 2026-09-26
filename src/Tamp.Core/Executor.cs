@@ -63,6 +63,12 @@ public sealed class Executor
     // #16: distinct error-level diagnostic ruleIds emitted during the current target,
     // used to infer a rule-scoped reproduce command. Reset per target.
     private readonly HashSet<string> _currentTargetErrorRules = new(StringComparer.Ordinal);
+    // #17 cache advisory.
+    private readonly bool _cacheAdvice;
+    private readonly AbsolutePath? _hashCachePath;
+    private HashCache? _hashCache;
+    private string? _currentInputsHash;   // computed once per target (start), reused at terminal
+    private bool? _currentWouldSkip;       // advisory: inputs matched last successful run
 
     public Executor(
         TargetGraph graph,
@@ -77,12 +83,16 @@ public sealed class Executor
         CapabilityMode capabilityMode = CapabilityMode.Off,
         bool allowSideEffects = false,
         IReadOnlySet<string>? runOnly = null,
-        IReadOnlyList<string>? ruleFilters = null)
+        IReadOnlyList<string>? ruleFilters = null,
+        bool cacheAdvice = false,
+        AbsolutePath? hashCachePath = null)
     {
         _capabilityMode = capabilityMode;
         _allowSideEffects = allowSideEffects;
         _runOnly = runOnly;
         _ruleFilters = ruleFilters ?? Array.Empty<string>();
+        _cacheAdvice = cacheAdvice;
+        _hashCachePath = hashCachePath;
         Graph = graph ?? throw new ArgumentNullException(nameof(graph));
         Mode = mode;
         Output = output ?? Console.Out;
@@ -134,6 +144,10 @@ public sealed class Executor
                 Emit(BuildEventTypes.ArtifactProduced, spec.Name, NewSpanId(), targetSpanId,
                     new ArtifactProducedPayload { Path = a.Path, Hash = a.Hash, Kind = a.Kind, SizeBytes = a.SizeBytes });
 
+        // #17: record the successful input hash for the next run's advisory.
+        if (_cacheAdvice && _hashCache is not null && _currentInputsHash is not null)
+            _hashCache.Set(spec.Name, _currentInputsHash);
+
         Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
             new TargetFinishedPayload
             {
@@ -141,7 +155,8 @@ public sealed class Executor
                 Status = BuildEventStatus.Success,
                 DurationMs = elapsed.TotalMilliseconds,
                 Outputs = outputs,
-                InputsHash = SafeInputsHash(spec),
+                InputsHash = _currentInputsHash,
+                WouldSkip = _currentWouldSkip,
             });
     }
 
@@ -155,7 +170,8 @@ public sealed class Executor
                 DurationMs = elapsed.TotalMilliseconds,
                 Reason = reason,
                 OutputTail = outputTail,
-                InputsHash = SafeInputsHash(spec),
+                InputsHash = _currentInputsHash,
+                WouldSkip = _currentWouldSkip,
                 Remedy = new TargetRemedy
                 {
                     Class = isRequiresFailure ? "config" : "code",
@@ -465,6 +481,10 @@ public sealed class Executor
             Emit(type, _currentTargetId, NewSpanId(), _currentTargetSpanId ?? _buildSpanId, payload);
         }));
 
+        // #17: load the per-worktree input-hash store for the would-skip advisory.
+        if (_cacheAdvice)
+            _hashCache = HashCache.Load(_hashCachePath ?? (TampBuild.RootDirectory / ".tamp" / "cache" / "input-hashes.json"));
+
         // ── Diagnostics: root build span (ADR 0018) — annotated via the projection (#0c).
         using var buildSpan = TampDiagnostics.BuildSource.StartActivity("build", ActivityKind.Internal);
         DiagnosticsProjection.AnnotateBuildStart(buildSpan, order.Select(s => s.Name).ToList(), ProjectInfo);
@@ -478,6 +498,18 @@ public sealed class Executor
             _currentTargetId = spec.Name;
             _currentTargetSpanId = targetSpanId;
             _currentTargetErrorRules.Clear();   // #16: per-target diagnostic-rule tracking
+
+            // #17 cache advisory: compute the input hash once (reused at terminal) and,
+            // when advice is on, compare to the last successful run — log "would skip" but
+            // never actually skip.
+            _currentInputsHash = SafeInputsHash(spec);
+            _currentWouldSkip = null;
+            if (_cacheAdvice && _hashCache is not null && _currentInputsHash is not null)
+            {
+                _currentWouldSkip = _hashCache.Get(spec.Name) == _currentInputsHash;
+                if (_currentWouldSkip == true)
+                    _log.WriteRaw($"==> {spec.Name} [cache-advice] inputs unchanged — would skip (advisory; still running)");
+            }
 
             // After a failure, only AssuredAfterFailure targets keep running.
             if (buildFailedAt.HasValue && !spec.AssuredAfterFailure)
@@ -725,6 +757,9 @@ public sealed class Executor
         // Between targets / at build end, ambient events parent to the build span.
         _currentTargetId = null;
         _currentTargetSpanId = null;
+
+        // #17: persist the updated input-hash store for the next run's advisory.
+        if (_cacheAdvice) _hashCache?.Save();
 
         buildSw.Stop();
         WriteBuildSummary(records, buildSw.Elapsed, buildFailedAt?.Name);
