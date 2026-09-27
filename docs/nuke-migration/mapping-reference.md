@@ -211,14 +211,54 @@ Verified Tamp verbs: `Login` `Logout` `Show` `List` `Create` `Delete` `Set` `Res
 |------|------|------|-------|
 | `AzureTasks.AzureCli(...)` / raw `az` | `AzureCli.Raw(...)` / typed verbs above | assisted | Tamp exposes typed verbs plus `Raw` for arbitrary `az` invocations. |
 
-## 8. Not yet mapped / known manual
+## 8. Coverage gaps — what Tamp can't convert (be up front)
 
-- **Tool families Tamp doesn't wrap** — a NUKE build using a tool with no `Tamp.{Family}` package is `manual`: keep a raw `ProcessRunner.Execute` / `[FromPath]` `Tool` call, or add a Tamp wrapper. (The full published set is the [Module Catalog](https://github.com/tamp-build/tamp/wiki/Module-Catalog).)
-- **NUKE verbs beyond a Tamp wrapper's surface** — e.g. a Docker/Helm/kubectl verb Tamp hasn't added yet → `manual` (raw call, or extend the wrapper).
-- **PowerShell / pwsh tasks** (`PowerShellTasks`) — no dedicated Tamp wrapper; use `ProcessRunner` / a `[FromPath("pwsh")]` `Tool`. `manual`.
-- **`[Partition]` / partitioned parallelism** — `manual`, no Tamp equivalent.
+The sections above are what Tamp *has*. This section is the honest inverse: **NUKE surface with no Tamp equivalent.** A migration must surface these to the adopter before it starts — they are the parts the tooling flags `manual` and cannot auto-convert. This list doubles as the **wrapper backlog** (priority = how often a real NUKE build hits it).
+
+> Scoped against NUKE's `Nuke.Common.Tools.*` set; **validate against the current NUKE release** when the tooling is built (NUKE's tool list moves). "No wrapper" = no `Tamp.{Family}` package today; the workaround is always a raw `ProcessRunner.Execute` / `[FromPath("x")] Tool` call, or write the wrapper.
+
+### 8.1 NUKE tools with **no Tamp wrapper** (can't auto-convert → `manual`)
+
+| NUKE tool | Tamp status | Migration workaround | Backlog priority |
+|-----------|-------------|----------------------|------------------|
+| `PowerShellTasks` / `PowerShell` / `Pwsh` | none | `[FromPath("pwsh")] Tool` / `ProcessRunner` | **high** (common glue) |
+| `GitTasks` (generic `git` CLI) | none (Tamp has `gh`, not raw `git`) | `[FromPath("git")] Tool`; some facts via `Tamp.GitHubCli.V2` | **high** |
+| `PaketTasks` (F# package manager) | none | raw `Tool` | med (F# shops) |
+| `GitReleaseManagerTasks` | none | raw `Tool` / `gh` release | med |
+| ReSharper CLT: `InspectCodeTasks` / `CleanupCodeTasks` / `dupFinder` | none (Tamp has Sonar/OpenGrep/analyzers) | raw `Tool`, or lean on `Tamp.SonarScanner` | med |
+| `DotCoverTasks` (JetBrains coverage) | none (Tamp has Coverlet + DotNetCoverage) | reshape onto `Tamp.Coverlet.V6` | low |
+| `ChocolateyTasks` | none | raw `Tool` | low |
+| `InnoSetupTasks` | none (Tamp has MSIX / MS Store) | raw `Tool` | low |
+| `ILRepackTasks` / `ILMergeTasks` | none | raw `Tool` | low |
+| `OctopusDeployTasks` | none | raw `Tool` / az/gh deploy | low |
+| `CodecovTasks` / `CoverallsNetTasks` (coverage upload) | none (Tamp ingests via `tamp-findings`) | reshape to `Tamp.Ingest.V1`, or raw `Tool` | low |
+| `SlackTasks` notifications | none (Tamp ships **Telegram**; Slack/Discord are `IBuildReporter` siblings, not yet published) | custom `IBuildReporter`, or raw webhook | med (notifications are common) |
+| `AzureKeyVaultTasks` | partial (Tamp has `Secret` + `OsSecretStore` + `Tamp.AzureCli.V2`) | reshape onto Secret injection / `AzureCli` | med |
+
+### 8.2 NUKE tools **covered differently** (convertible, but reshape — not 1:1)
+
+| NUKE | Tamp equivalent | Note |
+|------|-----------------|------|
+| `Xunit2Tasks` / `NUnitTasks` / `MSTestTasks` / `VSTestTasks` (console runners) | `DotNet.Test(...)` | Tamp runs tests through `dotnet test`, not per-framework console runners. Reshape the invocation. |
+| `NuGetTasks` (classic `nuget.exe` pack/push/restore) | `DotNet.Pack` / `DotNet.NuGetPush` / `DotNet.Restore` | Use the SDK path unless you specifically need `nuget.exe`. |
+| `MSBuildTasks` (SDK-style projects) | `DotNet.Build` (§7.1) | Prefer `DotNet.Build`; `Tamp.MSBuildClassic` (§7.12) only for full-framework/`msbuild.exe`. |
+
+### 8.3 NUKE **framework features** Tamp lacks (not tools)
+
+| NUKE feature | Tamp status | Migration guidance |
+|--------------|-------------|--------------------|
+| `Nuke.Components` (interface-mixin targets) | **in progress** — ADR 0020 / epic #57 | Component builds map near-1:1 *once `Tamp.Components` ships*; until then, write the targets out. |
+| `[Partition]` / partitioned parallelism | **no equivalent** | `manual` — run serially, or shard outside Tamp. The single biggest hard gap. |
+| `[GitRepository]` injection | none | Obtain repo facts via `git` / `Tamp.GitHubCli.V2`; no injected object. |
+| Serilog-based `Log.*` | Tamp's own `Logger` (`Log.Info/Warn/Error`) | Mechanical rename (§5). |
+| `nuke :setup` interactive wizard | `tamp init` (non-interactive scaffold) | Re-scaffold; don't port the bootstrap. |
+| ReSharper / Rider IDE plugin | VS Code extension (Fleet planned) | Different IDE surface; not a build-file concern. |
+
+## 9. Custom code / catch-all
+
+- **NUKE verbs beyond a Tamp wrapper's surface** — e.g. a Docker/Helm/kubectl verb Tamp hasn't added → `manual` (raw call, or extend the wrapper).
 - **Arbitrary custom C# in `Executes` bodies** — carries over unchanged *except* calls into NUKE APIs (covered above); anything not in this table is `manual`.
 
 ---
 
-*This reference is the durable asset ([ADR 0021](../adr/0021-nuke-to-tamp-migration.md)); tooling (`tamp migrate nuke` + agent-guided migration) is planned once it is complete. A machine-readable (YAML/JSON) projection is derived from these tables for tool consumption.*
+*This reference is the durable asset ([ADR 0021](../adr/0021-nuke-to-tamp-migration.md)); tooling (`tamp migrate nuke` + agent-guided migration) is planned once it is complete. §8 is the honest coverage boundary — a migration reports these gaps up front rather than failing on them mid-convert. A machine-readable (YAML/JSON) projection is derived from these tables for tool consumption.*

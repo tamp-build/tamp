@@ -117,8 +117,34 @@ tools:
     verbs: { AzureCli: Raw }
     notes: "typed verbs: Login/Logout/Show/List/Create/Delete/Set/Rest/GetAccessToken/Version"
 
+# Coverage gaps: NUKE surface with no Tamp equivalent. Surfaced up front by the tooling;
+# these are what cannot auto-convert. Validate against the current NUKE release when building.
+gaps:
+  no_wrapper:            # no Tamp.<Family> package -> manual (raw ProcessRunner / [FromPath] Tool)
+    - { nuke: PowerShellTasks, workaround: "[FromPath(pwsh)] Tool / ProcessRunner", priority: high }
+    - { nuke: GitTasks, workaround: "[FromPath(git)] Tool; some facts via Tamp.GitHubCli.V2", priority: high }
+    - { nuke: PaketTasks, workaround: "raw Tool", priority: med }
+    - { nuke: GitReleaseManagerTasks, workaround: "raw Tool / gh release", priority: med }
+    - { nuke: "InspectCodeTasks/CleanupCodeTasks/dupFinder (ReSharper CLT)", workaround: "raw Tool / Tamp.SonarScanner", priority: med }
+    - { nuke: SlackTasks, workaround: "custom IBuildReporter / webhook (Tamp ships Telegram)", priority: med }
+    - { nuke: AzureKeyVaultTasks, workaround: "Secret injection / Tamp.AzureCli.V2", priority: med }
+    - { nuke: DotCoverTasks, workaround: "reshape to Tamp.Coverlet.V6", priority: low }
+    - { nuke: ChocolateyTasks, workaround: "raw Tool", priority: low }
+    - { nuke: InnoSetupTasks, workaround: "raw Tool", priority: low }
+    - { nuke: "ILRepackTasks/ILMergeTasks", workaround: "raw Tool", priority: low }
+    - { nuke: OctopusDeployTasks, workaround: "raw Tool", priority: low }
+    - { nuke: "CodecovTasks/CoverallsNetTasks", workaround: "Tamp.Ingest.V1 / raw Tool", priority: low }
+  covered_differently:  # convertible, but reshape (not 1:1)
+    - { nuke: "Xunit2Tasks/NUnitTasks/MSTestTasks/VSTestTasks", tamp: "DotNet.Test", note: "runs via dotnet test, not per-framework console runners" }
+    - { nuke: "NuGetTasks (nuget.exe)", tamp: "DotNet.Pack / DotNet.NuGetPush / DotNet.Restore", note: "SDK path unless nuget.exe specifically needed" }
+    - { nuke: "MSBuildTasks (SDK-style)", tamp: "DotNet.Build", note: "MSBuildClassic only for full-framework/msbuild.exe" }
+  framework_features:   # not tools
+    - { feature: "Nuke.Components", status: in-progress, ref: "ADR 0020 / epic #57", note: "near-1:1 once Tamp.Components ships" }
+    - { feature: "[Partition] / partitioned parallelism", status: none, note: "biggest hard gap; run serially or shard outside Tamp" }
+    - { feature: "[GitRepository] injection", status: none, note: "use git / Tamp.GitHubCli.V2" }
+    - { feature: "Serilog Log.*", status: covered, tamp: "Tamp Logger (Log.Info/Warn/Error)" }
+    - { feature: "nuke :setup wizard", status: covered, tamp: "tamp init (non-interactive)" }
+
 manual:
-  - "tools with no Tamp.<Family> wrapper (see Module Catalog) -> raw ProcessRunner/[FromPath] Tool, or add a wrapper"
   - "NUKE verbs beyond a Tamp wrapper's surface -> raw call or extend the wrapper"
-  - "PowerShellTasks / pwsh -> ProcessRunner or [FromPath(\"pwsh\")] Tool"
-  - "[Partition] / partitioned parallelism -> no equivalent"
+  - "arbitrary custom C# in Executes bodies -> carries over except NUKE-API calls (mapped above)"
