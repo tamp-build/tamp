@@ -6,7 +6,9 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 Pre-1.0 versions may break public API freely between minor versions; the `0.x` line is intentionally a stabilization run.
 
-## [Unreleased] — Agent-first toolchain
+## [Unreleased]
+
+## [1.15.0] — 2026-09-27 — Agent-first toolchain
 
 The headline of this cycle is the **agent-first toolchain** ([ADR 0019](docs/adr/0019-agent-first-toolchain.md), epic [#7](https://github.com/tamp-build/tamp/issues/7)): Tamp now emits a canonical **machine output channel** and exposes an MCP **control surface**, so a coding agent is a first-class parallel worker rather than something screen-scraping the CLI. The guiding rule is *structure first, text second* — the human console is one **projection** of a single canonical event stream, never a separate code path. Everything here is **additive and opt-in**; the human console stays the default and every existing consumer (the 60+ satellites, `tamp-beacon`, `tamp-findings`) keeps working untouched. See [`docs/agent-first.md`](docs/agent-first.md).
 
