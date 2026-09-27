@@ -11,6 +11,8 @@ A small-core, plugin-driven build automation framework for **.NET 8, 9, and 10**
 
 Tamp is the architectural rethink of the .NET build-tool ecosystem's monolith problem: every tool wrapper ships as an independently-versioned NuGet package, the host environment is a first-class concept, and the architecture is the resilience strategy.
 
+It is also **agent-first**: the build emits a canonical machine channel (a typed event stream + a `tamp mcp` control surface), so a coding agent is a first-class parallel worker, not something screen-scraping the CLI. → **[Agent-first](agent-first)**.
+
 ## Try it
 
 ```bash

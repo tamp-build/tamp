@@ -2,7 +2,7 @@
 
 > Pack the build down tight.
 
-A small-core, plugin-driven build automation framework for .NET 10 and beyond. Cross-platform. Honest about resources. Forkable.
+A small-core, plugin-driven build automation framework for .NET 10 and beyond. Cross-platform. Honest about resources. Forkable — and **agent-first**: the build emits a canonical machine channel (a typed event stream + an MCP control surface), not just a human console, so a coding agent is a first-class parallel worker rather than something screen-scraping your CLI. → [**Agent-first**](docs/agent-first.md).
 
 ---
 
@@ -29,9 +29,9 @@ What's different: Tamp's *architecture* is the resilience strategy. One small co
 
 ## Status
 
-**`Tamp.Core` 1.13.0** is the current public API; the `Tamp.*` NuGet prefix is reserved to the project ([nuget.org/profiles/tamp](https://www.nuget.org/profiles/tamp)). **70+ first-party packages** are live and pin against core via standard `PackageReference`. The dogfood Release pipeline (3-OS × multi-TFM matrix, refuses to publish if the commit's CI hasn't passed) ships every satellite end-to-end through Tamp itself.
+**`Tamp.Core` 1.14.0** is the current public API; the `Tamp.*` NuGet prefix is reserved to the project ([nuget.org/profiles/tamp](https://www.nuget.org/profiles/tamp)). **70+ first-party packages** are live and pin against core via standard `PackageReference`. The dogfood Release pipeline (3-OS × multi-TFM matrix, refuses to publish if the commit's CI hasn't passed) ships every satellite end-to-end through Tamp itself.
 
-Tamp is actively maintained and in daily production use — it drives dev / test / prod pipelines for several private client projects. Public releases track that work: the security chain (1.11.0) came straight out of an adopter's compliance requirement. **Current focus: reporting and attestation** — see [`tamp-findings`](#downstream-consumers--dashboards--observability) below.
+Tamp is actively maintained and in daily production use — it drives dev / test / prod pipelines for several private client projects. Public releases track that work: the security chain (1.11.0) came straight out of an adopter's compliance requirement. **The [agent-first toolchain](docs/agent-first.md) ([ADR 0019](docs/adr/0019-agent-first-toolchain.md)) has shipped** — the canonical event stream, `tamp mcp` control surface, typed results + remedies, capability enforcement, agent economics, and end-to-end attribution are all live. **Current focus: reporting and attestation** — see [`tamp-findings`](#downstream-consumers--dashboards--observability) below.
 
 Latest surface additions worth knowing: `Tamp.Security.Pipeline` OTel metrics — findings + component counts (1.13.0); Wave 1+2 security wrappers split out to their own satellite repos (1.12.0); the SBOM → SAST → SCA → secrets → Dependency-Track / DefectDojo chain behind one import (1.11.0, [`docs/security-chain.md`](docs/security-chain.md)); adopter `IBuildReporter` plug-in via `[BuildReporter]` (1.10.0 — **breaking for `IBuildReporter` implementers**: `OnTargetFailed` now takes a `TargetFailureDetail` record carrying the failing target's output tail); `--list --format=json` + NDJSON `--reporter=json` (1.9.0); full TAMP001–TAMP006 analyzer family bundled with `Tamp.Core` (1.9.0+); `Tamp.Polling.Until` async helper (1.11.0+); native filesystem surface on `AbsolutePath` (1.8.0+); `Secret.Reveal()` public + TAMP004-gated (1.6.0+); async `Executes(Func<Task>)` overloads (1.5.0+); ADR-0018 diagnostics emission contract (three `ActivitySource`s + the `Tamp.Build` `Meter`) feeding `tamp-beacon` and downstream dashboards.
 
@@ -101,6 +101,46 @@ For deeper authoring patterns (target shapes, `[FromPath]` conventions, dependen
 
 ---
 
+## Agent-first — Tamp speaks to machines, not just humans
+
+When Tamp started, a build tool had one audience: it printed to a console and a person read it.
+Every .NET build tool is shaped by that assumption — text first, structure bolted on afterward.
+A year of building software alongside coding agents changed the assumption. Today the author's
+own work is agentic across several projects — N agents in N git worktrees, editing, building, and
+retrying constantly — and in that world the build has a **second first-class consumer** that
+reads structure, not prose; works in parallel; pays for context by the token; and wants to call
+the build like an API rather than screen-scrape a CLI.
+
+Tamp's answer is one rule applied everywhere: **emit structure first, render text second.** The
+human console is a *view* of a single canonical event stream, never a separate code path — no
+"human mode vs machine mode" fork ([ADR 0019](docs/adr/0019-agent-first-toolchain.md)). Everything
+below is additive and opt-in; the human console stays the default.
+
+- **One canonical event stream.** Every build fact is emitted once as a typed `BuildEvent`; the
+  console, the `IBuildReporter` surface, and the ADR-0018 OTel spans/meters are projections of
+  it. `--events build.ndjson` (or `TAMP_EVENTS=…`) writes the agent NDJSON firehose to its own
+  channel; `--reporter=json` gives quiet stdout NDJSON.
+- **`tamp mcp` control surface.** Runs Tamp as a [Model Context Protocol](https://modelcontextprotocol.io)
+  server — `list_targets` / `describe_target` / `plan` / `run_target` / `get_result` / `get_log`
+  — so an agent drives the build as callable tools.
+- **Typed results + remedies.** `target.finished` carries produced `outputs` (path + sha256 +
+  kind), `inputsHash`, and on failure a `remedy { class, reproduce, hint }` — a command that
+  re-runs *just* that failure, not a stack trace to mine.
+- **Capability tiers, correct-by-default.** Under `--enforce=agent`, side-effectful work
+  (publish / deploy / secret reveal) is denied unless explicitly elevated, each decision emitted
+  as `gate.evaluated`. An agent iterating on a test can't deploy to prod by accident.
+- **Agent economics.** A compact `FAILED (N):` summary with reproduce commands, plus opt-in
+  addressable per-target logs (`--capture-logs` → `.tamp/logs/<buildId>/<target>.log`, redacted)
+  so an agent fetches the one failing log instead of holding the firehose.
+- **Attribution + parallel-safety by construction.** Every event/artifact carries a resolved
+  `workerId` (`agent:pool/3` / `human:<login>`) that flows onto the ingest wire and into
+  `tamp-findings`; satellites that spin up containers/caches namespace them per-worker so N agents
+  in N worktrees don't collide.
+
+Full surface: [**docs/agent-first.md**](docs/agent-first.md). Rationale: [ADR 0019](docs/adr/0019-agent-first-toolchain.md).
+
+---
+
 ## Design philosophy
 
 - **Core stays small.** `Tamp.Core` contains the target dependency graph executor, parameter injection, path utilities, process invocation, host detection, secret handling, and dry-run support. Nothing else. No tool knowledge, no CI YAML generation, no Sonar integration.
@@ -108,6 +148,7 @@ For deeper authoring patterns (target shapes, `[FromPath]` conventions, dependen
 - **The host is real.** Tamp detects OS, container status, cgroup limits, CI vendor, tool availability. Targets declare what they need; Tamp warns or fails fast when the host can't deliver.
 - **Dry runs are mandatory.** Every wrapper produces a `CommandPlan` — a typed description of what would run. The runner either dispatches the plan or prints it. Dry-run output is exactly what would execute.
 - **Secrets stay secret.** Sensitive parameters are typed differently from regular parameters. The runner redacts them in logs, dry-run output, error messages, and stack traces. The type system makes leaks hard; the runtime makes them harder.
+- **Structure first, text second.** Every result, diagnostic, and event is emitted once as a typed `BuildEvent`; the human console is a *view* over that one stream, and the agent NDJSON channel + MCP control surface are other views. There is no separate "machine mode" code path to drift from the human one. See [Agent-first](docs/agent-first.md).
 - **Forkable by default.** Core is small enough that one person can maintain it on weekends. Modules are decoupled enough that abandoning one doesn't break the rest. The architecture is the resilience strategy.
 
 ---
@@ -188,7 +229,7 @@ Today: `net8.0;net9.0;net10.0`. Full rationale incl. the federal / regulated VDI
 
 **v1.x — Ecosystem fill.** Shipped. ADR backfill (0001–0018), per-satellite wiki pages, [migration guides from NUKE and Cake](https://github.com/tamp-build/tamp/wiki/Migrating-From-NUKE), the security chain, the VS Code extension, `tamp-beacon` + `tamp-findings`. Additional wrappers continue to land as adopters ask.
 
-**v2 — Adoption (current).** Reporting + attestation is the active workstream (`tamp-findings`, `Tamp.GitHubAttest`, SLSA / in-toto / DSSE provenance, CISA SSDF evidence). Also queued: schema-driven wrapper generation with AI-assisted bootstrapping from `--help` output ([ADR 0013](docs/adr/0013-schema-driven-wrappers.md)); JetBrains Fleet extension (`tamp-fleet`), sibling to the VS Code one; MCP server mode (`tamp :mcp-server`) exposing targets as callable tools; `Tamp.Components`; community module template.
+**v2 — Adoption (current).** The **[agent-first toolchain](docs/agent-first.md) shipped** ([ADR 0019](docs/adr/0019-agent-first-toolchain.md)): one canonical `BuildEvent` stream with the agent NDJSON channel, the `tamp mcp` MCP control surface (targets as callable tools), typed target results + remedies, capability-tier enforcement, agent economics (compact summaries + addressable logs), worker-identity attribution through to `tamp-findings`, and the satellite parallel-safety sweep. Reporting + attestation remains an active workstream (`tamp-findings`, `Tamp.GitHubAttest`, SLSA / in-toto / DSSE provenance, CISA SSDF evidence). Still queued: schema-driven wrapper generation with AI-assisted bootstrapping from `--help` output ([ADR 0013](docs/adr/0013-schema-driven-wrappers.md)); JetBrains Fleet extension (`tamp-fleet`), sibling to the VS Code one; `Tamp.Components`; community module template.
 
 **Explicitly out of scope:** distributed builds (Bazel-style remote execution is a different project). Build script DSLs (Tamp builds are .NET console projects, period). CI YAML generation — most teams treat CI config as the source of truth for *when* things run and the build script as the source of truth for *what* runs; Tamp owns the latter and stays out of the former.
 

@@ -1,6 +1,6 @@
 # ADR 0019: Agent-first toolchain — dual-channel emission, typed results, parallel-safety, capability tiers
 
-**Status:** Proposed (2026-09-26). Tracking epic: [#7](https://github.com/tamp-build/tamp/issues/7).
+**Status:** Accepted (2026-09-26) — delivered. Tracking epic [#7](https://github.com/tamp-build/tamp/issues/7) shipped end-to-end: the canonical `BuildEvent` model + NDJSON agent channel, the ADR-0018 projection (the `TampDiagnostics` proto-fork removed), typed target results with remedies, capability tiers + secret gate, slice-running, the `tamp mcp` control surface, agent economics (compact summaries + addressable per-target logs), worker-identity attribution, and the satellite parallel-safety sweep. Attribution reaches `tamp-findings` via the `tamp-ingest-v1` v1.3 `actor` field. See [Agent-first](../agent-first.md) for the user-facing surface.
 
 **Context.** The largest consumer of Tamp today is its own author, and that work is already agentic across several projects — N agents in N worktrees, each editing, building, and retrying constantly. Nuke, Cake, and MSBuild are human-first frameworks with machine output bolted on afterward (MSBuild's binlog is structured but not agent-shaped). Nobody in .NET treats an agent as a *peer worker* from the ground up. That is a real, currently-empty position — and, more importantly, it pays off on the dogfood alone regardless of whether any external adopter ever wants it.
 
