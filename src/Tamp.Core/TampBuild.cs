@@ -341,6 +341,8 @@ public abstract partial class TampBuild
     {
         T? build = null;
         NdjsonEventSink? eventSink = null;
+        NdjsonEventSink? stdoutEventSink = null;   // --reporter=json: canonical stream to stdout
+        TextWriter? savedConsoleOut = null;        // real stdout, restored in the finally
         try
         {
             build = new T();
@@ -525,16 +527,24 @@ public abstract partial class TampBuild
                 solutionPath,
                 RootDirectory.Value);
 
-            // TAM-140: build the CLI-selected default reporter. In JSON mode the
-            // JsonBuildReporter takes Console.Out for NDJSON emit and the Logger
-            // is routed to TextWriter.Null so framework decorations don't
-            // pollute the structured stream.
-            IBuildReporter defaultReporter = reporterKind switch
-            {
-                ReporterKind.Json => new JsonBuildReporter(Console.Out),
-                _ => NoopBuildReporter.Instance,
-            };
+            // ADR 0019 (1.16 hard cutover): --reporter=json is no longer a separate legacy
+            // schema. It emits the CANONICAL event stream to stdout with the human console fully
+            // suppressed — the same envelope --events writes to a file. The stdout stream is an
+            // IBuildEventSink (below), not an IBuildReporter, so the default reporter is a no-op.
+            IBuildReporter defaultReporter = NoopBuildReporter.Instance;
             TextWriter? logOutput = reporterKind == ReporterKind.Json ? TextWriter.Null : null;
+
+            // --reporter=json: canonical NDJSON to stdout. Keep the real stdout for the stream and
+            // redirect Console.Out so target-body writes (a Console.WriteLine inside an Executes
+            // block) can't interleave with / corrupt the structured stream. Restored in the
+            // finally. The sink does not own the writer, so disposing it flushes but never closes
+            // stdout.
+            if (mode == ExecutionMode.Run && reporterKind == ReporterKind.Json)
+            {
+                savedConsoleOut = Console.Out;
+                stdoutEventSink = new NdjsonEventSink(savedConsoleOut);
+                Console.SetOut(TextWriter.Null);
+            }
 
             // TAM-230: collect any [BuildReporter]-marked fields the build script
             // declared (Telegram, Slack, custom, …) and compose them with the
@@ -545,15 +555,23 @@ public abstract partial class TampBuild
                 ? defaultReporter
                 : new CompositeBuildReporter(new[] { defaultReporter }.Concat(adopterReporters).ToArray());
 
-            // `#0b` (ADR 0019): agent NDJSON event sink on a separate channel.
-            // Resolved from `--events <path>` / `TAMP_EVENTS`; purely additive —
-            // the human console is unaffected. Best-effort open (warns + skips on
-            // failure). Only for an actual run; disposed in the finally below.
+            // `#0b` (ADR 0019): agent NDJSON event sink to a FILE — `--events <path>` / `TAMP_EVENTS`.
+            // Purely additive, best-effort (warns + skips on failure). Only for an actual run.
             if (mode == ExecutionMode.Run
                 && ResolveEventsTarget(args, Environment.GetEnvironmentVariable) is { } eventsPath)
             {
                 eventSink = NdjsonEventSink.TryCreate(eventsPath, Console.Error);
             }
+
+            // The one canonical stream can fan out to both stdout (--reporter=json) and a file
+            // (--events) at once; compose when both are live. Both carry the identical envelope.
+            IBuildEventSink? runSink = (stdoutEventSink, eventSink) switch
+            {
+                (null, null) => null,
+                (not null, null) => stdoutEventSink,
+                (null, not null) => eventSink,
+                _ => new CompositeBuildEventSink(stdoutEventSink, eventSink),
+            };
 
             // #20: capability enforcement mode + elevation (default Off — humans unaffected).
             var (capabilityMode, allowSideEffects) = ResolveCapabilityMode(args, Environment.GetEnvironmentVariable);
@@ -563,7 +581,7 @@ public abstract partial class TampBuild
                 skippedByUser: skipTargets,
                 skipDependencies: skipDeps,
                 reporter: reporter,
-                eventSink: eventSink,
+                eventSink: runSink,
                 capabilityMode: capabilityMode,
                 allowSideEffects: allowSideEffects,
                 runOnly: runOnly,
@@ -585,9 +603,17 @@ public abstract partial class TampBuild
             try { build?.CleanUpScratchDirs(); }
             catch { /* swallow — cleanup must not change the build's exit code */ }
 
-            // Flush + close the NDJSON event stream (best-effort; never affects exit code).
+            // Flush + close the NDJSON event stream(s) (best-effort; never affects exit code).
             try { eventSink?.Dispose(); }
             catch { /* swallow */ }
+            try { stdoutEventSink?.Dispose(); }   // flushes stdout; does not close it (writer not owned)
+            catch { /* swallow */ }
+            // Restore the real stdout that --reporter=json redirected away from target-body writes.
+            if (savedConsoleOut is not null)
+            {
+                try { Console.SetOut(savedConsoleOut); }
+                catch { /* swallow */ }
+            }
         }
     }
 

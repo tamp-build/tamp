@@ -1,14 +1,16 @@
 using System.IO;
-using System.Text.Json;
+using System.Linq;
 using Xunit;
 
 namespace Tamp.Core.Tests;
 
 /// <summary>
-/// Tests for <see cref="IBuildReporter"/> + <see cref="JsonBuildReporter"/>
-/// + Executor integration (TAM-140). Verifies the NDJSON event stream
-/// shape, lifecycle ordering, success vs failure paths, and that
-/// <c>--reporter=json</c> suppresses the text decorations on stdout.
+/// Tests for the machine output channel on stdout — <c>--reporter=json</c>. As of the
+/// ADR-0019 hard cutover (1.16) this emits the <b>canonical</b> <see cref="BuildEvent"/>
+/// envelope (identical to <c>--events</c>), not the pre-1.15 flat shape. Verifies the
+/// lifecycle ordering, per-status payloads, success vs failure vs skipped paths, and that
+/// the default text reporter still emits no NDJSON. The legacy <c>JsonBuildReporter</c>
+/// flat schema is gone (#68).
 /// </summary>
 [Collection(nameof(ConsoleCaptureCollection))]
 public sealed class BuildReporterTests
@@ -55,173 +57,156 @@ public sealed class BuildReporterTests
         }
     }
 
-    private static List<JsonElement> ParseNdjson(string text)
+    /// <summary>
+    /// Deserialize the captured stdout as canonical <see cref="BuildEvent"/>s and keep only this
+    /// run's events. Console.Out is process-global; a parallel test in another collection can bleed
+    /// a line into the same writer — filtering by the run's <see cref="BuildEvent.BuildId"/> (and
+    /// tolerating non-canonical lines) keeps the assertions focused on this build's stream.
+    /// </summary>
+    private static List<BuildEvent> EventsForThisRun(string text)
     {
-        var events = new List<JsonElement>();
+        var all = new List<BuildEvent>();
         foreach (var line in text.Split('\n'))
         {
-            var trimmed = line.Trim();
-            if (string.IsNullOrEmpty(trimmed) || !trimmed.StartsWith('{')) continue;
-            events.Add(JsonDocument.Parse(trimmed).RootElement);
+            var t = line.Trim();
+            if (t.Length == 0 || t[0] != '{') continue;
+            BuildEvent? ev = null;
+            try { ev = BuildEventJson.Deserialize(t); } catch { /* not a canonical line */ }
+            if (ev is not null) all.Add(ev);
         }
-        return events;
+        var start = all.FirstOrDefault(e => e.Type == BuildEventTypes.BuildStarted);
+        return start is null ? all : all.Where(e => e.BuildId == start.BuildId).ToList();
     }
 
-    // ─── Reporter event lifecycle — happy path ────────────────────────────
+    private static readonly HashSet<string> Lifecycle = new()
+    {
+        BuildEventTypes.BuildStarted, BuildEventTypes.TargetStarted,
+        BuildEventTypes.TargetFinished, BuildEventTypes.BuildFinished,
+    };
+
+    // ─── Canonical envelope + lifecycle ordering — happy path ─────────────
 
     [Fact]
-    public void Json_Reporter_Emits_Build_Start_Then_Target_Events_Then_Build_End()
+    public void Json_Reporter_Emits_Canonical_Lifecycle_In_Order()
     {
         var (output, exit) = RunWithCapturedStdout(new[] { "Compile", "--reporter=json" });
         Assert.Equal(0, exit);
-        var events = ParseNdjson(output);
-        var eventTypes = events.Select(e => e.GetProperty("event").GetString()!).ToList();
+        var events = EventsForThisRun(output);
+
+        // Every line is the canonical envelope, not the old flat shape.
+        Assert.All(events, e => Assert.Equal(BuildEventSchema.Version, e.SchemaVersion));
+        Assert.Contains(events, e => e.Type == BuildEventTypes.BuildStarted);   // not "build.start"
+
+        var types = events.Select(e => e.Type).Where(Lifecycle.Contains).ToList();
         Assert.Equal(new[]
         {
-            "build.start",
-            "target.start",   // Restore
-            "target.end",     // Restore
-            "target.start",   // Compile
-            "target.end",     // Compile
-            "build.end",
-        }, eventTypes);
+            BuildEventTypes.BuildStarted,
+            BuildEventTypes.TargetStarted,   // Restore
+            BuildEventTypes.TargetFinished,  // Restore
+            BuildEventTypes.TargetStarted,   // Compile
+            BuildEventTypes.TargetFinished,  // Compile
+            BuildEventTypes.BuildFinished,
+        }, types);
     }
 
     [Fact]
-    public void Json_Reporter_BuildStart_Carries_RequestedTargets_And_Closure()
+    public void Json_Reporter_BuildStarted_Carries_RequestedTargets_And_Closure()
     {
         var (output, _) = RunWithCapturedStdout(new[] { "Compile", "--reporter=json" });
-        var events = ParseNdjson(output);
-        var buildStart = events[0];
-        Assert.Equal("build.start", buildStart.GetProperty("event").GetString());
-        Assert.Equal("Compile",
-            buildStart.GetProperty("requested_targets")[0].GetString());
-        var closure = buildStart.GetProperty("closure").EnumerateArray()
-            .Select(e => e.GetString()!).ToList();
-        Assert.Contains("Restore", closure);
-        Assert.Contains("Compile", closure);
+        var events = EventsForThisRun(output);
+        var start = (BuildStartedPayload)events.Single(e => e.Type == BuildEventTypes.BuildStarted).Payload;
+        Assert.Equal("Compile", start.RequestedTargets[0]);
+        Assert.Contains("Restore", start.ExecutionClosure);
+        Assert.Contains("Compile", start.ExecutionClosure);
     }
 
     [Fact]
-    public void Json_Reporter_TargetEnd_Reports_Succeeded_And_Duration_For_Happy_Path()
+    public void Json_Reporter_TargetFinished_Reports_Success_And_Duration_For_Happy_Path()
     {
         var (output, _) = RunWithCapturedStdout(new[] { "Compile", "--reporter=json" });
-        var events = ParseNdjson(output);
-        var targetEnds = events.Where(e => e.GetProperty("event").GetString() == "target.end").ToList();
-        Assert.Equal(2, targetEnds.Count);
-        Assert.All(targetEnds, e =>
+        var finished = EventsForThisRun(output)
+            .Where(e => e.Type == BuildEventTypes.TargetFinished)
+            .Select(e => (TargetFinishedPayload)e.Payload)
+            .ToList();
+        Assert.Equal(2, finished.Count);
+        Assert.All(finished, p =>
         {
-            Assert.Equal("succeeded", e.GetProperty("status").GetString());
-            Assert.True(e.TryGetProperty("duration_ms", out _));
+            Assert.Equal(BuildEventStatus.Success, p.Status);
+            Assert.NotNull(p.DurationMs);
         });
     }
 
     [Fact]
-    public void Json_Reporter_BuildEnd_Reports_Succeeded_Status_And_Exit_Zero()
+    public void Json_Reporter_BuildFinished_Reports_Succeeded_And_Exit_Zero()
     {
         var (output, _) = RunWithCapturedStdout(new[] { "Compile", "--reporter=json" });
-        var events = ParseNdjson(output);
-        var buildEnd = events.Last();
-        Assert.Equal("build.end", buildEnd.GetProperty("event").GetString());
-        Assert.Equal("succeeded", buildEnd.GetProperty("status").GetString());
-        Assert.Equal(0, buildEnd.GetProperty("exit_code").GetInt32());
-        Assert.True(buildEnd.TryGetProperty("total_duration_ms", out _));
-        Assert.False(buildEnd.TryGetProperty("first_failed_target", out _),
-            "first_failed_target should be omitted on success (null + WhenWritingNull)");
+        var end = (BuildFinishedPayload)EventsForThisRun(output).Single(e => e.Type == BuildEventTypes.BuildFinished).Payload;
+        Assert.Equal("succeeded", end.Status);
+        Assert.Equal(0, end.ExitCode);
+        Assert.Null(end.FirstFailedTarget);
     }
 
-    // ─── Reporter event lifecycle — failure path ──────────────────────────
+    // ─── Failure path ─────────────────────────────────────────────────────
 
     [Fact]
-    public void Json_Reporter_BuildEnd_Reports_Failed_With_FirstFailedTarget()
+    public void Json_Reporter_BuildFinished_Reports_Failed_With_FirstFailedTarget()
     {
         var (output, exit) = RunWithCapturedStdout(new[] { "Compile", "--reporter=json" }, throwFromCompile: true);
         Assert.NotEqual(0, exit);
-
-        var events = ParseNdjson(output);
-        var buildEnd = events.Last();
-        Assert.Equal("build.end", buildEnd.GetProperty("event").GetString());
-        Assert.Equal("failed", buildEnd.GetProperty("status").GetString());
-        Assert.Equal("Compile", buildEnd.GetProperty("first_failed_target").GetString());
+        var end = (BuildFinishedPayload)EventsForThisRun(output).Single(e => e.Type == BuildEventTypes.BuildFinished).Payload;
+        Assert.Equal("failed", end.Status);
+        Assert.Equal("Compile", end.FirstFailedTarget);
     }
 
     [Fact]
-    public void Json_Reporter_Emits_TargetEnd_Failed_With_Reason_When_Target_Throws()
+    public void Json_Reporter_TargetFinished_Failure_Carries_Reason_When_Target_Throws()
     {
         var (output, _) = RunWithCapturedStdout(new[] { "Compile", "--reporter=json" }, throwFromCompile: true);
-        var events = ParseNdjson(output);
-        var compileEnd = events.First(e =>
-            e.GetProperty("event").GetString() == "target.end" &&
-            e.GetProperty("name").GetString() == "Compile");
-        Assert.Equal("failed", compileEnd.GetProperty("status").GetString());
-        Assert.Contains("synthetic compile failure",
-            compileEnd.GetProperty("failure_reason").GetString()!);
+        var compile = (TargetFinishedPayload)EventsForThisRun(output)
+            .Single(e => e.Type == BuildEventTypes.TargetFinished && e.TargetId == "Compile").Payload;
+        Assert.Equal(BuildEventStatus.Failure, compile.Status);
+        Assert.Contains("synthetic compile failure", compile.Reason);
     }
 
-    // ─── Reporter event lifecycle — skipped path ──────────────────────────
+    // ─── Skipped path ─────────────────────────────────────────────────────
 
     [Fact]
-    public void Json_Reporter_Emits_TargetSkipped_Event_When_Target_User_Skipped()
+    public void Json_Reporter_TargetFinished_Skipped_When_Target_User_Skipped()
     {
         var (output, exit) = RunWithCapturedStdout(new[] { "Compile", "--skip", "Restore", "--reporter=json" });
         Assert.Equal(0, exit);
-        var events = ParseNdjson(output);
-        var skipped = events.First(e => e.GetProperty("event").GetString() == "target.skipped");
-        Assert.Equal("Restore", skipped.GetProperty("name").GetString());
-        Assert.Equal("skipped by --skip", skipped.GetProperty("reason").GetString());
+        var restore = (TargetFinishedPayload)EventsForThisRun(output)
+            .Single(e => e.Type == BuildEventTypes.TargetFinished && e.TargetId == "Restore").Payload;
+        Assert.Equal(BuildEventStatus.Skipped, restore.Status);
+        Assert.Equal("skipped by --skip", restore.Reason);
     }
 
-    // ─── Stdout discipline: only NDJSON, no banner / decorations ──────────
-
-    // Note: removed two prior "Json_Reporter_Mode_Suppresses_AsciiBanner" /
-    // "Json_Reporter_Mode_Suppresses_Target_Header_Decorations" tests. They
-    // tried to assert negative-substring invariants on the captured stdout
-    // (no "Tamp", no "==>"), but Console.Out is process-global state: tests
-    // running in parallel write THEIR banner / "==>" lines into the SAME
-    // StringWriter we redirected here, so the assertions flake on Linux CI
-    // even when the JsonBuildReporter itself behaves correctly. The
-    // umbrella `Json_Reporter_Mode_Every_Line_Is_Independently_Parseable`
-    // test (below) covers the actual contract — every emitted line is a
-    // valid JSON object — and is robust against the bleed by parsing each
-    // captured line in isolation rather than substring-matching.
+    // ─── Stdout discipline: every line is a canonical event ───────────────
 
     [Fact]
-    public void Json_Reporter_Mode_Every_Line_Is_Independently_Parseable()
+    public void Json_Reporter_Every_Line_Is_A_Canonical_BuildEvent()
     {
-        // The contract under test: the JsonBuildReporter never emits a malformed
-        // JSON line. We pre-filter to lines that STARTED with '{' because
-        // Console.Out is process-global; parallel tests can bleed framework
-        // banner / "==>" decorations into the same StringWriter we redirected
-        // here. Those leaked lines aren't this reporter's output, so excluding
-        // them from the parse-assertion keeps the test focused on the actual
-        // contract instead of the test-runner's parallelism shape.
         var (output, _) = RunWithCapturedStdout(new[] { "Compile", "--reporter=json" });
-        var jsonLineCount = 0;
-        foreach (var line in output.Split('\n'))
+        var events = EventsForThisRun(output);
+        Assert.All(events, e =>
         {
-            var trimmed = line.Trim();
-            if (string.IsNullOrEmpty(trimmed)) continue;
-            if (!trimmed.StartsWith('{')) continue;
-            using var doc = JsonDocument.Parse(trimmed);
-            Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
-            jsonLineCount++;
-        }
-        // Sanity-check that the reporter DID emit at least the build.start /
-        // build.end pair — otherwise a regression that silenced it would also
-        // pass the per-line assertion (vacuously).
-        Assert.True(jsonLineCount >= 2,
-            $"expected at least build.start + build.end NDJSON events, captured {jsonLineCount}");
+            Assert.Contains(e.Type, BuildEventSchema.Types);      // known vocabulary
+            Assert.Equal(e.BuildId, e.TraceId);                   // canonical envelope invariant
+        });
+        // At minimum the build.started / build.finished pair (guard against a silenced stream).
+        Assert.Contains(events, e => e.Type == BuildEventTypes.BuildStarted);
+        Assert.Contains(events, e => e.Type == BuildEventTypes.BuildFinished);
     }
 
-    // ─── Default (text) reporter is preserved — NDJSON not emitted ──────
+    // ─── Default (text) reporter is preserved — no NDJSON on stdout ────────
 
     [Fact]
     public void Text_Reporter_Default_Does_Not_Emit_Ndjson()
     {
         var (output, _) = RunWithCapturedStdout(new[] { "Compile" });
-        // Banner DOES appear; no JSON events on stdout.
-        Assert.Contains("==>", output);   // target header
-        Assert.DoesNotContain("\"event\":\"build.start\"", output);
+        Assert.Contains("==>", output);                            // human target header present
+        Assert.DoesNotContain("\"type\":\"build.started\"", output); // no canonical stream
+        Assert.DoesNotContain("\"event\":\"build.start\"", output);  // and certainly not the old flat shape
     }
 
     // ─── ParseInvocation handles the --reporter flag ─────────────────────
@@ -258,9 +243,6 @@ public sealed class BuildReporterTests
     [Fact]
     public void Noop_Reporter_Methods_Are_No_Ops()
     {
-        // The contract is "doesn't throw and doesn't emit." Any non-empty side
-        // effect would surface as test flakiness elsewhere; we just sanity-check
-        // the methods don't throw.
         var r = NoopBuildReporter.Instance;
         r.OnBuildStart("id", new[] { "A" }, new[] { "A" });
         r.OnTargetStart("A");

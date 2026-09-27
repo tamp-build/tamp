@@ -1,6 +1,3 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
-
 namespace Tamp;
 
 /// <summary>
@@ -11,10 +8,12 @@ namespace Tamp;
 /// <remarks>
 /// The default <see cref="NoopBuildReporter"/> is a no-op — the Executor's
 /// existing <c>_log.WriteRaw(...)</c> calls handle human-facing text output
-/// as before. Pass <see cref="JsonBuildReporter"/> via Executor's constructor
-/// (typically wired from <c>--reporter=json</c>) to emit NDJSON events on
-/// a dedicated writer; when active, the Logger's output is routed to
-/// <see cref="System.IO.TextWriter.Null"/> so stdout carries only NDJSON.
+/// as before. This interface remains for adopter reporters registered via
+/// <c>[BuildReporter]</c> (Telegram / Slack / custom); the executor drives it
+/// through <see cref="ReporterProjectionSink"/>, a projection of the one
+/// canonical <see cref="BuildEvent"/> stream. The machine output channel
+/// (<c>--events</c> / <c>--reporter=json</c>) emits that canonical stream
+/// directly as NDJSON — it is not an <see cref="IBuildReporter"/>.
 /// </remarks>
 public interface IBuildReporter
 {
@@ -57,112 +56,4 @@ public sealed class NoopBuildReporter : IBuildReporter
     public void OnTargetSkipped(string name, string reason) { }
     public void OnTargetNotRun(string name, string reason) { }
     public void OnBuildEnd(string status, string? firstFailedTarget, int exitCode, TimeSpan totalDuration) { }
-}
-
-/// <summary>
-/// NDJSON event reporter. Emits one JSON object per line to the configured
-/// writer (typically stdout). Used by the <c>--reporter=json</c> CLI flag for
-/// IDE-extension consumption of build progress. TAM-140.
-/// </summary>
-/// <remarks>
-/// Event schema mirrors the contract documented in TAM-140: <c>build.start</c>,
-/// <c>target.start</c>, <c>target.end</c> (status = succeeded | failed),
-/// <c>target.skipped</c>, <c>target.not_run</c>, <c>build.end</c>. Timestamps
-/// are ISO-8601 UTC with millisecond precision. Each line is independently
-/// parseable; no trailing comma, no array wrapper.
-/// </remarks>
-public sealed class JsonBuildReporter : IBuildReporter
-{
-    private static readonly JsonSerializerOptions Options = new()
-    {
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-    };
-
-    private readonly TextWriter _writer;
-    private readonly object _writeLock = new();
-
-    public JsonBuildReporter(TextWriter writer)
-    {
-        _writer = writer ?? throw new ArgumentNullException(nameof(writer));
-    }
-
-    private static string NowIso() =>
-        DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", System.Globalization.CultureInfo.InvariantCulture);
-
-    private void Emit<T>(T payload)
-    {
-        lock (_writeLock)
-        {
-            _writer.WriteLine(JsonSerializer.Serialize(payload, Options));
-            _writer.Flush();
-        }
-    }
-
-    public void OnBuildStart(string buildId, IReadOnlyList<string> requestedTargets, IReadOnlyList<string> executionClosure)
-        => Emit(new
-        {
-            @event = "build.start",
-            build_id = buildId,
-            started_at = NowIso(),
-            requested_targets = requestedTargets,
-            closure = executionClosure,
-        });
-
-    public void OnTargetStart(string name)
-        => Emit(new
-        {
-            @event = "target.start",
-            name,
-            started_at = NowIso(),
-        });
-
-    public void OnTargetSucceeded(string name, TimeSpan duration)
-        => Emit(new
-        {
-            @event = "target.end",
-            name,
-            status = "succeeded",
-            duration_ms = (long)duration.TotalMilliseconds,
-            ended_at = NowIso(),
-        });
-
-    public void OnTargetFailed(TargetFailureDetail detail)
-        => Emit(new
-        {
-            @event = "target.end",
-            name = detail.TargetName,
-            status = "failed",
-            duration_ms = (long)detail.Duration.TotalMilliseconds,
-            failure_reason = detail.FailureReason,
-            output_tail = detail.OutputTail,
-            ended_at = NowIso(),
-        });
-
-    public void OnTargetSkipped(string name, string reason)
-        => Emit(new
-        {
-            @event = "target.skipped",
-            name,
-            reason,
-        });
-
-    public void OnTargetNotRun(string name, string reason)
-        => Emit(new
-        {
-            @event = "target.not_run",
-            name,
-            reason,
-        });
-
-    public void OnBuildEnd(string status, string? firstFailedTarget, int exitCode, TimeSpan totalDuration)
-        => Emit(new
-        {
-            @event = "build.end",
-            status,
-            first_failed_target = firstFailedTarget,
-            exit_code = exitCode,
-            total_duration_ms = (long)totalDuration.TotalMilliseconds,
-            ended_at = NowIso(),
-        });
 }
