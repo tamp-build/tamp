@@ -8,6 +8,8 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+- Package now ships XML documentation files (`.xml`) alongside the assembly, so consumers get IntelliSense and API docs. (Mirrors [tamp-build/tamp#3](https://github.com/tamp-build/tamp/pull/50).)
+
 ## [1.14.0] — 2026-08-21 — Tamp.Sarif: dynamic-analysis fields
 
 ### Added
