@@ -8,6 +8,14 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+## [1.16.0] — unreleased — Tamp.Components (in progress)
+
+The 1.16 line: **[Tamp.Components](docs/adr/0020-tamp-components.md)** — reusable targets via interface mixins ([epic #57](https://github.com/tamp-build/tamp/issues/57)). Building up over several phases; this section fills in as they land.
+
+### Added
+
+- **Interface target discovery (Phase 1, load-bearing).** `TampBuild.CollectTargets` now also walks the build's interfaces and collects `Target`-typed **default interface members**, so a build can compose targets from component interfaces: `class Build : TampBuild, ICompile, ITest, IPack`. A same-named `Target` on the build class (or a base class) **overrides** the component's (class-precedence); two *different* interfaces contributing the same target name with no class override is a **fail-closed** error naming both; and component target lambdas join the method map so a component can `.DependsOn(...)` another component's target by reference. Fully **additive** — a build implementing no component interface behaves exactly as before. The `Tamp.Components` contract + concrete `Tamp.Components.NetCli.V{N}` packages follow in later phases.
+
 ## [1.15.2] — 2026-09-27 — Secret-derivation helper + public worker identity
 
 Second adopter-friction patch (per [ADR 0022](docs/adr/0022-versioning-policy.md); 1.16 stays reserved for Tamp.Components).
