@@ -8,6 +8,15 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+## [1.15.2] — 2026-09-27 — Secret-derivation helper + public worker identity
+
+Second adopter-friction patch (per [ADR 0022](docs/adr/0022-versioning-policy.md); 1.16 stays reserved for Tamp.Components).
+
+### Added
+
+- **`Secret.Derive(transform, name?)`** — produce a *derived secret* (the transmitted form of a secret: a base64 basic-auth header, a signed URL, a hashed token) so a wrapper can register **both** the raw and the transformed literal. Redaction matches values literally, so registering only the raw secret leaves a transformed form unredacted; `Secrets = new[] { pat, pat.Derive(BuildAuthHeader) }` scrubs either. The transform runs inside the framework boundary, so the call site never `Reveal()`s the raw value. Systemic fix for the "registered the raw secret but transmitted a transformed one" gap that recurs in encoding wrappers (e.g. [tamp-ado-git#5](https://github.com/tamp-build/tamp-ado-git/issues/5)).
+- **`TampBuild.WorkerId` + `TampBuild.WorkerActor`** — consumer target code can now read the resolved worker id (same value the event stream stamps, precedence `TAMP_WORKER_ID` → CI actor → git author → `human:<login>`) and its `(Id, Kind)` split (`"agent:pool/3"` → `("pool/3","agent")`; bare ⇒ `human`). A hand-rolled ingest can send `actor {id,kind}` without re-deriving core's precedence (which risks drift). ([#77](https://github.com/tamp-build/tamp/issues/77))
+
 ## [1.15.1] — 2026-09-27 — Adopter-friction hardening
 
 The first wave of real 1.15 agent-first adoption (two dogfood adopters) surfaced a batch of friction;

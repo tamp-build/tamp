@@ -64,6 +64,34 @@ public abstract partial class TampBuild
     public static AbsolutePath TemporaryDirectory => (RootDirectory / ".tamp" / "temp").EnsureDirectoryExists();
 
     /// <summary>
+    /// The resolved <b>worker id</b> for this build — who is producing it, an agent or a human — the
+    /// same value the event stream stamps as <see cref="BuildEvent.WorkerId"/> (#19). Resolution
+    /// precedence: <c>TAMP_WORKER_ID</c> → CI actor → git author → <c>human:&lt;login&gt;</c>. Read this
+    /// from target code (e.g. to send an ingest actor) instead of re-deriving the precedence yourself,
+    /// which duplicates core and risks drift. Computed once per process.
+    /// </summary>
+    public string WorkerId => WorkerIdResolver.ResolveDefault();
+
+    /// <summary>
+    /// <see cref="WorkerId"/> split into <c>(Id, Kind)</c> — e.g. <c>"agent:pool/3"</c> →
+    /// <c>("pool/3", "agent")</c>, <c>"human:scott@example.com"</c> → <c>("scott@example.com", "human")</c>.
+    /// A bare value with no <c>kind:</c> prefix is treated as kind <c>"human"</c>. Mirrors the
+    /// <c>actor { id, kind }</c> shape persisted by <c>tamp-ingest-v1</c>, so a hand-rolled ingest can
+    /// send attribution without reimplementing the parse.
+    /// </summary>
+    public (string Id, string Kind) WorkerActor => SplitWorkerId(WorkerId);
+
+    /// <summary>Split a worker id on its first <c>:</c> into <c>(id, kind)</c>; no prefix ⇒ kind <c>"human"</c>.</summary>
+    internal static (string Id, string Kind) SplitWorkerId(string workerId)
+    {
+        if (string.IsNullOrEmpty(workerId)) return (string.Empty, "human");
+        var colon = workerId.IndexOf(':');
+        return colon > 0
+            ? (workerId[(colon + 1)..], workerId[..colon])
+            : (workerId, "human");
+    }
+
+    /// <summary>
     /// Build-instance tracking for <see cref="Scratch"/>-allocated temp dirs.
     /// Cleaned up at end of <see cref="Execute{T}"/> (success or failure)
     /// unless the <c>TAMP_KEEP_SCRATCH</c> env var is set.
