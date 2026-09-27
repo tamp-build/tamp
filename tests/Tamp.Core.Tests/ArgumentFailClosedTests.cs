@@ -125,4 +125,24 @@ public sealed class ArgumentFailClosedTests
         Assert.Equal(0, ParamBuild.RanCount);              // fail closed: default graph did NOT run
         Assert.Contains("Unknown argument", stderr);
     }
+
+    // ─── #71: `mcp` / `init` are global-tool verbs, not consumer-build verbs ─
+
+    [Fact]
+    public void Mcp_Verb_On_Consumer_Build_Points_To_The_Global_Tool_And_Runs_Nothing()
+    {
+        var (_, stderr, exit) = RunCaptured(new[] { "mcp" });
+        Assert.NotEqual(0, exit);
+        Assert.Equal(0, ParamBuild.RanCount);              // did NOT fall through to the default graph
+        Assert.Contains("tamp mcp", stderr);               // points at the supported entrypoint
+    }
+
+    [Fact]
+    public void Init_Verb_On_Consumer_Build_Points_To_The_Global_Tool()
+    {
+        var (_, stderr, exit) = RunCaptured(new[] { "init" });
+        Assert.NotEqual(0, exit);
+        Assert.Equal(0, ParamBuild.RanCount);
+        Assert.Contains("tamp init", stderr);
+    }
 }

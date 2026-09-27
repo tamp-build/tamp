@@ -379,6 +379,26 @@ public abstract partial class TampBuild
                 return 0;
             }
 
+            // #71: `mcp` / `init` are verbs of the global `tamp` tool, not of a consumer build exe.
+            // The build doesn't host the MCP server itself (that would pull the MCP SDK + Hosting
+            // into Tamp.Core and onto every satellite); the global tool locates and drives this build
+            // for you. Point the user there instead of failing with a confusing "unknown target".
+            if (args.Length > 0 && (args[0] == "mcp" || args[0] == "init") && !targets.ContainsKey(args[0]))
+            {
+                var verb = args[0];
+                Console.Error.WriteLine($"tamp: `{verb}` is a command of the global `tamp` tool, not of this build.");
+                if (verb == "mcp")
+                {
+                    Console.Error.WriteLine("      Start the MCP control surface with:  tamp mcp   (run from this repo)");
+                    Console.Error.WriteLine("      It locates and drives this build project (list_targets / plan / run_target / get_result / get_log).");
+                }
+                else
+                {
+                    Console.Error.WriteLine("      Scaffold a new build with:  tamp init");
+                }
+                return 2;
+            }
+
             // Single-default invariant: at most one target across the entire build class (including
             // any partial-class files) may carry `.Default()`. Reflection collects targets from all
             // files uniformly, so this check is naturally file-layout-independent.

@@ -134,6 +134,13 @@ instead of screen-scraping the CLI:
 Read tools need no elevation; `run_target` executes under default-deny side-effect
 enforcement unless explicitly elevated.
 
+**Entrypoint.** The MCP server is a verb of the **global `tamp` tool** — run `tamp mcp` from the
+repo. It locates your build project and drives it for you; the tool calls above are answered from
+your build's own graph. You do **not** run the build exe with an `mcp` argument
+(`dotnet run --project build -- mcp` is not the server — the build exe hosts targets, not the MCP
+protocol; doing so errors with a pointer here). This keeps the MCP SDK out of `Tamp.Core` and off
+every satellite.
+
 ## Capability tiers — correct-by-default
 
 An agent iterating on a test target should not be able to publish a package or deploy a service
@@ -146,6 +153,27 @@ enforcement, side-effectful work is **denied by default** and each decision is e
 dotnet tamp Deploy --enforce=agent                        # side effects blocked, gate.evaluated emitted
 dotnet tamp Deploy --enforce=agent --allow-side-effects   # explicit elevation
 ```
+
+`--enforce` **fails closed**: a misspelled value (`--enforce=agnet`) or flag is a hard error, never
+a silent Off — a safety flag must not disable on a typo. Unknown flags in general are rejected (run
+`--help` for the list).
+
+**Declaring the tier + requirements (fluent API).** A target states its own capability and host
+requirements, which `--list --format json` (and `describe_target`) then report and `--enforce=agent`
+acts on:
+
+```csharp
+Target Deploy => _ => _
+    .Capability(CapabilityTier.SideEffectful)   // Safe (default) | Grey | SideEffectful
+    .RequiresNetwork()                          // → requires_network
+    .RequiresDocker()                           // → requires_docker
+    .RequiresAdmin()                            // → requires_admin
+    .Executes(() => ...);
+```
+
+Revealing a `Secret` implies `SideEffectful` even without `.Capability(...)`. These surface as
+`capability` / `requires_network` / `requires_docker` / `requires_admin` in the target catalog, so
+an agent can see what a target needs before running it.
 
 Off by default — humans are unaffected. This is the same idiom as the caching dial and slice
 scoping: **correct-by-default, fast-by-explicit-scope, fail-closed.**
