@@ -6,9 +6,10 @@ namespace Tamp;
 /// <see cref="IBuildReporter"/> a <em>projection</em> rather than a second
 /// hand-synced emission path: the <c>Executor</c> emits canonical events once, and
 /// this sink translates them back into the existing reporter callbacks — so every
-/// adopter reporter (Telegram, <see cref="CompositeBuildReporter"/>,
-/// <see cref="JsonBuildReporter"/> from <c>--reporter=json</c>) keeps working
-/// unchanged.
+/// adopter reporter (Telegram, <see cref="CompositeBuildReporter"/>, and any
+/// <c>[BuildReporter]</c>-registered custom reporter) keeps working unchanged.
+/// The machine channel (<c>--events</c> / <c>--reporter=json</c>) consumes the
+/// canonical stream directly as NDJSON and does not go through this projection.
 /// </summary>
 internal sealed class ReporterProjectionSink : IBuildEventSink
 {

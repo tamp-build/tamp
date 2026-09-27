@@ -50,8 +50,13 @@ console is untouched:
 
 ```bash
 dotnet tamp Ci --events build.ndjson       # or: TAMP_EVENTS=build.ndjson dotnet tamp Ci
-dotnet tamp Ci --reporter=json             # quiet-JSON: NDJSON to stdout, banner suppressed
+dotnet tamp Ci --reporter=json             # quiet-JSON: the SAME canonical envelope, to stdout, human console suppressed
 ```
+
+Both flags carry the **identical** envelope — `--events` to a file (additive, human console untouched),
+`--reporter=json` to stdout (human console suppressed: framework decorations and target-body `Console`
+writes are redirected off the stream). They can be combined; the stream fans out to both. There is one
+schema, not two.
 
 Each event carries a stable envelope: `type`, `buildId` / `runId`, `traceId` / `spanId` /
 `parentSpanId` (so the stream reconstructs into a span tree), a monotonic `seq`, a `ts`, the

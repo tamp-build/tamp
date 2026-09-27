@@ -340,9 +340,11 @@ public sealed class Executor
         });
 
     /// <summary>
-    /// Build-lifecycle event sink. Defaults to <see cref="NoopBuildReporter"/>;
-    /// set via constructor to receive structured events (e.g. NDJSON via
-    /// <see cref="JsonBuildReporter"/> from <c>--reporter=json</c>). TAM-140.
+    /// Build-lifecycle reporter surface. Defaults to <see cref="NoopBuildReporter"/>;
+    /// set via constructor to drive <c>[BuildReporter]</c>-registered adopter reporters
+    /// through <see cref="ReporterProjectionSink"/>. The machine NDJSON channel
+    /// (<c>--events</c> / <c>--reporter=json</c>) is an <see cref="IBuildEventSink"/>, not
+    /// this surface. TAM-140.
     /// </summary>
     public IBuildReporter Reporter { get; }
 

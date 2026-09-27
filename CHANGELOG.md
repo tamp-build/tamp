@@ -8,6 +8,14 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — `--reporter=json` now emits the canonical event stream, not the legacy flat shape.** The stdout machine channel is now the **same ADR-0019 envelope** as `--events` (`schemaVersion` / `type` / `buildId` / `runId` / `traceId` / `spanId` / `workerId` / `seq` / `payload.$type`), with the human console fully suppressed (framework decorations *and* target-body `Console` writes redirected off the stream). The pre-1.15 `JsonBuildReporter` shape (`{"event":"build.start","build_id":…}`, vocabulary `build.start` / `target.end`) is **removed** — an agent keying off stdout now gets one schema across both channels. `--reporter=json` and `--events <file>` can be used together (the stream fans out to both). **Consumers of the old flat shape must update** to the canonical vocabulary (`build.started` / `target.started` / `target.finished` / `build.finished`, status `success|failure|skipped|not_run` on targets, `succeeded|failed` on the build); the [Tamp for VS Code](https://github.com/tamp-build/tamp-vscode) extension is updated in lockstep. The public `JsonBuildReporter` class is gone. ([#68](https://github.com/tamp-build/tamp/issues/68))
+
+### Fixed
+
+- **Imperative tool dispatch is now visible on the canonical stream.** A bare `ProcessRunner.Execute(plan)` from inside an `Executes(Action)` body — or a failure handler — previously emitted only an ADR-0018 span, so the tool invocation (and any non-zero exit on it) was absent from `--events`. It now emits `tool.invoked` / `tool.exited` (secret-scrubbed argv, one shared command span parented to the target), matching declarative dispatch. When a target finishes green *despite* a non-zero tool exit whose code was dropped, the executor emits a `tamp.tool.nonzero_ignored` note. New `ProcessRunner.Run(plan)` throws `ProcessExecutionException` on non-zero so an imperative body can fail the target in one line. ([#66](https://github.com/tamp-build/tamp/issues/66))
+
 ## [1.15.0] — 2026-09-27 — Agent-first toolchain
 
 The headline of this cycle is the **agent-first toolchain** ([ADR 0019](docs/adr/0019-agent-first-toolchain.md), epic [#7](https://github.com/tamp-build/tamp/issues/7)): Tamp now emits a canonical **machine output channel** and exposes an MCP **control surface**, so a coding agent is a first-class parallel worker rather than something screen-scraping the CLI. The guiding rule is *structure first, text second* — the human console is one **projection** of a single canonical event stream, never a separate code path. Everything here is **additive and opt-in**; the human console stays the default and every existing consumer (the 60+ satellites, `tamp-beacon`, `tamp-findings`) keeps working untouched. See [`docs/agent-first.md`](docs/agent-first.md).
