@@ -1,6 +1,6 @@
 # ADR 0020: Tamp.Components — reusable targets via interface mixins
 
-**Status:** Proposed (2026-09-27). Target: **1.16**. Design decisions below are settled; this ADR is the plan of record.
+**Status:** Proposed (2026-09-27). Target: **1.16**. Tracking epic: [#57](https://github.com/tamp-build/tamp/issues/57). Design decisions below are settled; this ADR is the plan of record.
 
 ## Context
 
