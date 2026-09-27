@@ -895,6 +895,24 @@ public sealed class Executor
             FailureExitCode: effectiveFailedAt?.ExitCode,
             HandlersInvoked: handlersInvoked));
 
+        // ── #63 Produces-coverage advisory. When a run executed at least one target but NO
+        // target in the closure declared any Produces globs, nothing was recorded as an artifact
+        // — an adoption that looks healthy on the stream but has zero attestation value. Surface
+        // it as a build-level diagnostic.emitted (note): machine-visible to attestation consumers
+        // via the event channel, and quiet on the human console (ReporterProjectionSink does not
+        // render diagnostics), so legitimately artifact-less builds aren't nagged.
+        var ranCount = records.Count(r => r.Status is TargetStatus.Done or TargetStatus.Failed);
+        if (ranCount > 0 && order.All(s => s.ProducedGlobs.Count == 0))
+            Emit(BuildEventTypes.DiagnosticEmitted, targetId: null, NewSpanId(), _buildSpanId,
+                new DiagnosticEmittedPayload
+                {
+                    RuleId = "tamp.produces.none",
+                    Level = "note",
+                    Message = $"{ranCount} target(s) ran but none declared Produces — no artifacts were recorded this run. "
+                        + "Declare .Produces(...) on targets that emit build outputs so target.finished.outputs / artifact.produced populate (attestation input). "
+                        + "Audit coverage with `tamp --list --format json` (each target's `produces`).",
+                });
+
         // ── Canonical build.finished (`#0a`). ReporterProjectionSink turns this
         // into IBuildReporter.OnBuildEnd. Status vocabulary ("succeeded"/"failed")
         // is preserved for the reporter surface.

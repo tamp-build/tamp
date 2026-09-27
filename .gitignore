@@ -44,3 +44,6 @@ Thumbs.db
 *.log
 *.tlog
 .sonarqube/
+
+# Local MCP config (interagent bearer lives in $INTERAGENT_TOKEN, not here)
+.mcp.json
