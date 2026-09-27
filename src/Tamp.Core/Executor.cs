@@ -63,6 +63,7 @@ public sealed class Executor
     // #16: distinct error-level diagnostic ruleIds emitted during the current target,
     // used to infer a rule-scoped reproduce command. Reset per target.
     private readonly HashSet<string> _currentTargetErrorRules = new(StringComparer.Ordinal);
+    private bool _currentTargetSawNonzeroTool;   // #66: an imperative tool exited non-zero this target
     // #17 cache advisory.
     private readonly bool _cacheAdvice;
     private readonly AbsolutePath? _hashCachePath;
@@ -516,15 +517,20 @@ public sealed class Executor
 
         // Activate the ambient emitter (#13) so target bodies / helpers can emit
         // diagnostic.emitted / artifact.produced (#12) parented to the current target span.
-        using var ambientScope = BuildEvents.Activate(new BuildEventScope((type, payload) =>
+        using var ambientScope = BuildEvents.Activate(new BuildEventScope((type, spanId, payload) =>
         {
             // #16: remember error-level diagnostic ruleIds for the current target so a
             // rule-scoped remedy.reproduce can be inferred.
             if (type == BuildEventTypes.DiagnosticEmitted && payload is DiagnosticEmittedPayload d
                 && d.Level == "error" && !string.IsNullOrEmpty(d.RuleId))
                 _currentTargetErrorRules.Add(d.RuleId);
-            Emit(type, _currentTargetId, NewSpanId(), _currentTargetSpanId ?? _buildSpanId, payload);
-        }));
+            // #66: an ambient (imperative / failure-handler) tool exited non-zero. If the target
+            // still reports Done, its exit code was read imperatively and dropped — flag it so
+            // EmitTargetSuccess can emit the tamp.tool.nonzero_ignored advisory.
+            if (type == BuildEventTypes.ToolExited && payload is ToolExitedPayload te && te.ExitCode != 0)
+                _currentTargetSawNonzeroTool = true;
+            Emit(type, _currentTargetId, spanId ?? NewSpanId(), _currentTargetSpanId ?? _buildSpanId, payload);
+        }, NewSpanId, _redactionTable));
 
         // #17: load the per-worktree input-hash store for the would-skip advisory.
         if (_cacheAdvice)
@@ -543,6 +549,7 @@ public sealed class Executor
             _currentTargetId = spec.Name;
             _currentTargetSpanId = targetSpanId;
             _currentTargetErrorRules.Clear();   // #16: per-target diagnostic-rule tracking
+            _currentTargetSawNonzeroTool = false;   // #66: per-target imperative-tool-failure tracking
 
             // #17 cache advisory: compute the input hash once (reused at terminal) and,
             // when advice is on, compare to the last successful run — log "would skip" but
@@ -758,7 +765,12 @@ public sealed class Executor
                                 Cwd = plan.WorkingDirectory,
                             });
                         var cmdSw = Stopwatch.StartNew();
-                        exit = ProcessRunner.Execute(plan, capturingOutput, capturingOutput, sourceTargetName: spec.Name);
+                        // #66: this loop emits tool.invoked/tool.exited itself (above/below), so
+                        // suppress ProcessRunner's ambient emission for just this call — otherwise
+                        // the declarative path would double-emit. Imperative and failure-handler
+                        // dispatch are NOT suppressed, so they become visible on the stream.
+                        using (BuildEvents.SuppressToolEvents())
+                            exit = ProcessRunner.Execute(plan, capturingOutput, capturingOutput, sourceTargetName: spec.Name);
                         cmdSw.Stop();
                         Emit(BuildEventTypes.ToolExited, spec.Name, cmdSpanId, targetSpanId,
                             new ToolExitedPayload { Tool = plan.Executable, ExitCode = exit, DurationMs = cmdSw.Elapsed.TotalMilliseconds });
@@ -803,6 +815,22 @@ public sealed class Executor
                 }
                 else
                 {
+                    // #66: a tool the target ran imperatively (ProcessRunner.Execute) exited non-zero,
+                    // yet the target reported Done — the exit code was read and dropped. Surface it as
+                    // a note on the canonical stream (quiet on the human console) so a stream consumer
+                    // doesn't trust a green target that swallowed a failure.
+                    if (_currentTargetSawNonzeroTool)
+                        Emit(BuildEventTypes.DiagnosticEmitted, spec.Name, NewSpanId(), targetSpanId,
+                            new DiagnosticEmittedPayload
+                            {
+                                RuleId = "tamp.tool.nonzero_ignored",
+                                Level = "note",
+                                Message = $"target '{spec.Name}' completed successfully, but a tool it invoked exited non-zero — "
+                                    + "the exit code was read imperatively (ProcessRunner.Execute) and not propagated to the target. "
+                                    + "Return the CommandPlan from Executes(...) (declarative dispatch fails the target on a non-zero exit), "
+                                    + "or call ProcessRunner.Run(...), which throws on non-zero.",
+                                FixHint = "Executes(() => plan)  // or  ProcessRunner.Run(plan)",
+                            });
                     EmitTargetSuccess(spec, targetSpanId, sw.Elapsed);
                     records.Add(TargetExecutionRecord.Done(spec.Name, sw.Elapsed));
                     DiagnosticsProjection.AnnotateTargetTerminal(targetSpan, spec, new TargetTerminalTelemetry(sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeSuccess, null));
