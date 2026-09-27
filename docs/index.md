@@ -70,7 +70,7 @@ Every load-bearing design choice is recorded as an ADR. Read these before propos
 
 ## Releases
 
-`Tamp.Core 1.13.0` is live, the `Tamp.*` NuGet prefix is reserved to the project, and 70+ first-party packages are shipping. See the [changelog ↗](https://github.com/tamp-build/tamp/blob/main/CHANGELOG.md) and the [main README ↗](https://github.com/tamp-build/tamp#readme) for the current package matrix.
+`Tamp.Core 1.15.0` is live, the `Tamp.*` NuGet prefix is reserved to the project, and 70+ first-party packages are shipping. See the [changelog ↗](https://github.com/tamp-build/tamp/blob/main/CHANGELOG.md) and the [main README ↗](https://github.com/tamp-build/tamp#readme) for the current package matrix.
 
 Tamp is actively maintained and in daily production use across several private client projects. Current focus: **reporting and attestation**.
 
