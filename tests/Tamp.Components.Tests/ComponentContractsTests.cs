@@ -1,4 +1,6 @@
 using System.IO;
+using System.Linq;
+using System.Text.Json;
 using Tamp;
 using Xunit;
 
@@ -6,60 +8,56 @@ namespace Tamp.Components.Tests;
 
 /// <summary>
 /// ADR 0020 Phase 2: the <c>Tamp.Components</c> target-shape interfaces (IRestore/ICompile/ITest/IPack)
-/// wire the standard chain (Restore → Compile → { Test, Pack }) and the <c>IHaz*</c> contracts inject
-/// build-provided values into the (tool-abstract) component bodies. Driven through the public
-/// <see cref="TampBuild.Execute{T}"/> entry with a static capture (xUnit serializes methods in a class).
+/// wire the standard chain (Restore → Compile → { Test, Pack }). Verified through the public
+/// <c>--plan --format json</c> surface, which resolves the execution order without running anything —
+/// so the tool-abstract <c>*Plan()</c> bodies never need a real toolchain here. (IHaz* injection into
+/// the concrete plans is covered by the Tamp.Components.NetCli.V10 tests.)
 /// </summary>
 public sealed class ComponentContractsTests
 {
-    private static readonly List<string> Log = new();
-
-    // A standard build: implements ITest + IPack (⇒ ICompile ⇒ IRestore), satisfies the IHaz*
-    // contracts, and supplies the tool-abstract Run* bodies (here: record what ran).
+    // A standard build: ITest + IPack (⇒ ICompile ⇒ IRestore). The *Plan() bodies are never invoked
+    // by `--plan` (it resolves order and runs nothing), so trivial stubs suffice.
     private sealed class StdBuild : TampBuild, ITest, IPack
     {
-        public Solution Solution => null!;                 // not touched by the stub bodies
-        public string Configuration => "Release";
+        public Solution Solution => null!;
+        public Configuration Configuration => Configuration.Release;
         public AbsolutePath ArtifactsDirectory => AbsolutePath.Create(Path.GetTempPath());
 
-        void IRestore.RunRestore() => Log.Add("restore");
-        void ICompile.RunCompile() => Log.Add($"compile:{Configuration}");   // reads the injected IHazConfiguration
-        void ITest.RunTest() => Log.Add("test");
-        void IPack.RunPack() => Log.Add("pack");
+        private static CommandPlan Noop() => new() { Executable = "noop", Arguments = System.Array.Empty<string>() };
+        CommandPlan IRestore.RestorePlan() => Noop();
+        CommandPlan ICompile.CompilePlan() => Noop();
+        CommandPlan ITest.TestPlan() => Noop();
+        CommandPlan IPack.PackPlan() => Noop();
     }
 
-    private static (int Exit, IReadOnlyList<string> Ran) Run(params string[] args)
+    /// <summary>Resolve the execution order for <paramref name="target"/> via `--plan --format json`.</summary>
+    private static IReadOnlyList<string> PlanOrder(string target)
     {
-        Log.Clear();
-        var prevOut = Console.Out;
-        Console.SetOut(TextWriter.Null);
-        try { return (TampBuild.Execute<StdBuild>(args), Log.ToArray()); }
-        finally { Console.SetOut(prevOut); }
+        var so = new StringWriter();
+        var prev = Console.Out;
+        Console.SetOut(so);
+        try { TampBuild.Execute<StdBuild>(new[] { target, "--plan", "--format", "json" }); }
+        finally { Console.SetOut(prev); }
+
+        using var doc = JsonDocument.Parse(so.ToString());
+        return doc.RootElement.GetProperty("order")
+            .EnumerateArray().Select(e => e.GetProperty("name").GetString()!).ToList();
     }
 
     [Fact]
     public void Test_Target_Wires_Restore_Then_Compile_Then_Test()
-    {
-        var (exit, ran) = Run("Test");
-        Assert.Equal(0, exit);
-        Assert.Equal(new[] { "restore", "compile:Release", "test" }, ran);
-    }
+        => Assert.Equal(new[] { "Restore", "Compile", "Test" }, PlanOrder("Test"));
 
     [Fact]
     public void Pack_Target_Wires_Restore_Then_Compile_Then_Pack()
-    {
-        var (exit, ran) = Run("Pack");
-        Assert.Equal(0, exit);
-        Assert.Equal(new[] { "restore", "compile:Release", "pack" }, ran);
-    }
+        => Assert.Equal(new[] { "Restore", "Compile", "Pack" }, PlanOrder("Pack"));
 
     [Fact]
-    public void IHazConfiguration_Value_Reaches_The_Component_Body()
+    public void Compile_Alone_Does_Not_Drag_In_Test_Or_Pack()
     {
-        // RunCompile records $"compile:{Configuration}"; seeing "Release" proves the build's
-        // IHazConfiguration value was injected into the component's (tool-abstract) body.
-        var (_, ran) = Run("Compile");
-        Assert.Contains("compile:Release", ran);
-        Assert.DoesNotContain("test", ran);       // Compile alone doesn't drag Test in
+        var order = PlanOrder("Compile");
+        Assert.Equal(new[] { "Restore", "Compile" }, order);
+        Assert.DoesNotContain("Test", order);
+        Assert.DoesNotContain("Pack", order);
     }
 }

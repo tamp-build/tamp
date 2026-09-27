@@ -21,11 +21,11 @@ public interface IHazSolution
     Solution Solution { get; }
 }
 
-/// <summary>A build that exposes its build configuration (e.g. <c>Debug</c> / <c>Release</c>) to components.</summary>
+/// <summary>A build that exposes its build <see cref="Tamp.Configuration"/> (Debug/Release) to components.</summary>
 public interface IHazConfiguration
 {
-    /// <summary>The build configuration — conventionally <c>Debug</c> or <c>Release</c>. Components read this; the build provides it (often an injected <c>[Parameter]</c> with a default).</summary>
-    string Configuration { get; }
+    /// <summary>The build configuration. Components read this; the build provides it (often an injected <c>[Parameter]</c> with a default). Builds needing a configuration outside the <see cref="Tamp.Configuration"/> enum override the affected target.</summary>
+    Configuration Configuration { get; }
 }
 
 /// <summary>A build that exposes its artifacts output directory to components that emit files.</summary>

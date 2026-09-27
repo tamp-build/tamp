@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+    <RootNamespace>Tamp.Components.NetCli.V10.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="coverlet.collector" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Tamp.Components.NetCli.V10\Tamp.Components.NetCli.V10.csproj" />
+    <ProjectReference Include="..\..\src\Tamp.Components\Tamp.Components.csproj" />
+    <ProjectReference Include="..\..\src\Tamp.Core\Tamp.Core.csproj" />
+  </ItemGroup>
+
+</Project>
