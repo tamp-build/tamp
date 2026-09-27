@@ -11,6 +11,7 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 ### Added
 
 - **`--help` / `-h`** — prints usage (the recognized flags) plus the callable target list and runs nothing. Previously there was no help flag, and passing one silently ran the default target graph. ([#70](https://github.com/tamp-build/tamp/issues/70))
+- **`--verify-redaction`** — a self-test that proves the `--capture-logs` secret-redaction guarantee on disk: it writes a unique sentinel `Secret` through the same `RedactingTextWriter` the per-target log uses, to a real file, and shows the value replaced by its `<Secret:name>` placeholder (PASS/FAIL). The guarantee was previously unobservable — secrets pass as command-line arguments and never reach captured child output, so a clean log proved nothing. Docs note the literal-match caveat (a base64/url-encoded secret is a different, unregistered string and isn't redacted). ([#72](https://github.com/tamp-build/tamp/issues/72))
 
 ### Changed
 

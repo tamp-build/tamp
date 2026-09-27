@@ -345,6 +345,11 @@ public abstract partial class TampBuild
         TextWriter? savedConsoleOut = null;        // real stdout, restored in the finally
         try
         {
+            // #72: `--verify-redaction` proves the --capture-logs secret-redaction path on-disk and
+            // runs nothing else. Needs no build graph, so handle it first — it always works.
+            if (IsVerifyRedactionInvocation(args))
+                return RunRedactionSelfTest(Console.Out);
+
             build = new T();
 
             // List-only (and --help) invocations skip value-injection failures so adopters
@@ -786,6 +791,71 @@ public abstract partial class TampBuild
     /// <summary>True when the invocation is a help request (<c>--help</c> / <c>-h</c> / <c>-?</c>).</summary>
     internal static bool IsHelpInvocation(string[] args)
         => args.Any(a => a is "--help" or "-h" or "-?" or "/?");
+
+    /// <summary>True when the invocation is the redaction self-test (<c>--verify-redaction</c>).</summary>
+    internal static bool IsVerifyRedactionInvocation(string[] args)
+        => args.Any(a => a == "--verify-redaction");
+
+    /// <summary>
+    /// #72: demonstrate that the <c>--capture-logs</c> redaction guarantee actually holds on disk.
+    /// Registers a unique sentinel <see cref="Secret"/>, writes it through the <b>same</b>
+    /// <see cref="RedactingTextWriter"/> + <see cref="RedactionTable"/> the per-target log uses
+    /// (see the executor's <c>OpenTargetLog</c>) to a real temp file, then reads the bytes back and
+    /// checks the raw value is gone and its placeholder is present. This converts the security claim
+    /// from asserted to demonstrable and guards it against regression — the redaction path is
+    /// otherwise unobservable in a normal build, because secrets pass as command-line arguments and
+    /// never reach captured child output.
+    /// </summary>
+    internal static int RunRedactionSelfTest(TextWriter output)
+    {
+        var sentinel = "TAMP-REDACTION-SELFTEST-" + Guid.NewGuid().ToString("N");
+        const string secretName = "selftest-sentinel";
+        var table = new RedactionTable();
+        table.Register(new Secret(secretName, sentinel));
+
+        var tempFile = Path.Combine(Path.GetTempPath(), $"tamp-redaction-selftest-{Guid.NewGuid():N}.log");
+        string onDisk;
+        try
+        {
+            // Exactly how the executor's OpenTargetLog builds the capture writer (#23):
+            // a RedactingTextWriter wrapping the file stream, sharing the RedactionTable.
+            using (var stream = new StreamWriter(tempFile, append: false, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
+            using (var writer = new RedactingTextWriter(stream, table))
+            {
+                writer.WriteLine($"Authorization: Bearer {sentinel}");
+                writer.WriteLine($"token={sentinel}");
+            }   // writer flushes redacted content to the stream; then the stream flushes to disk
+            onDisk = File.ReadAllText(tempFile);
+        }
+        finally
+        {
+            try { File.Delete(tempFile); } catch { /* best-effort cleanup */ }
+        }
+
+        var placeholder = $"<Secret:{secretName}>";
+        var rawLeaked = onDisk.Contains(sentinel, StringComparison.Ordinal);
+        var placeholderPresent = onDisk.Contains(placeholder, StringComparison.Ordinal);
+        var pass = !rawLeaked && placeholderPresent;
+
+        output.WriteLine("tamp --capture-logs redaction self-test");
+        output.WriteLine($"  wrote to a capture log : Authorization: Bearer <sentinel>  (sentinel registered as Secret '{secretName}')");
+        output.WriteLine($"  read back from disk    : {onDisk.Replace("\r", "").Replace("\n", " | ").TrimEnd(' ', '|')}");
+        output.WriteLine($"  raw value on disk      : {(rawLeaked ? "PRESENT (leak!)" : "absent")}");
+        output.WriteLine($"  placeholder on disk    : {(placeholderPresent ? placeholder : "MISSING")}");
+        output.WriteLine();
+        if (pass)
+        {
+            output.WriteLine("PASS — the registered secret value was replaced with its placeholder on the way to disk.");
+            output.WriteLine();
+            output.WriteLine("Caveat: redaction matches the registered value literally. A tool that transforms a secret");
+            output.WriteLine("before emitting it (base64/url-encoding it into a header, hashing it, etc.) emits a different");
+            output.WriteLine("string that is not registered and so is not redacted — register such derived forms as Secrets too.");
+            return 0;
+        }
+        output.WriteLine("FAIL — redaction did not behave as expected (raw value present, or placeholder missing).");
+        output.WriteLine("This is a real regression in the --capture-logs guarantee. Please report it.");
+        return 1;
+    }
 
     /// <summary>Print usage — recognized flags plus callable targets — and run nothing (#70).</summary>
     private static void PrintHelp(IReadOnlyDictionary<string, TargetSpec> targets)

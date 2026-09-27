@@ -195,7 +195,21 @@ lazily:
 - **Addressable per-target logs** — `--capture-logs` tees each target's output to a redacted
   `.tamp/logs/<buildId>/<target>.log`; `target.finished.logPath` carries the path, and MCP
   `get_log` reads the one failing log instead of holding the whole stream. Secrets are redacted
-  on the way to disk.
+  on the way to disk: the log writer is a `RedactingTextWriter` over the file, so any registered
+  `Secret` value is replaced with a `<Secret:name>` placeholder before bytes hit disk.
+
+**Verifying redaction.** The guarantee is otherwise unobservable in a normal build — secrets pass
+as command-line *arguments*, which never reach the child's captured stdout/stderr, so a clean log
+proves nothing was emitted, not that redaction fired. To demonstrate (and regression-guard) it, run
+`--verify-redaction`: it writes a unique sentinel `Secret` through the exact capture writer to a real
+file and shows the value replaced by its placeholder on disk. **Caveat:** redaction matches the
+registered value *literally* — a tool that transforms a secret before emitting it (base64/url-encoding
+it into a header, hashing it) produces a different, unregistered string that is **not** redacted;
+register such derived forms as `Secret`s too.
+
+```bash
+dotnet tamp --verify-redaction     # PASS/FAIL: proves a Secret is scrubbed on the way to a capture log
+```
 
 ## Attribution by construction
 
