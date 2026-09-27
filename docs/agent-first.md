@@ -63,12 +63,42 @@ A finished target doesn't just say pass/fail. `target.finished` carries the stru
 an agent can act on without parsing logs:
 
 - **`outputs`** — the artifacts the target produced (path + `sha256` + kind + size), synthesized
-  from its declared `Produces` globs, with one `artifact.produced` event per file.
+  from its declared `Produces` globs, with one `artifact.produced` event per file. **`Produces`
+  globs are relative to the worktree root** (`RootDirectory`) — not the artifacts dir, working
+  dir, or absolute. A glob that matches **no files** yields empty `outputs` on a normal run, but
+  is treated as a **missing artifact** by slice-running and **fail-closes `--from`** (see below) —
+  so declare only what a target produces *unconditionally*, and put conditional outputs on the
+  target that actually emits them. A target declaring **no** `Produces` omits the `outputs` key
+  entirely (machine-distinct from `outputs: []` = declared-but-unmatched).
 - **`inputsHash`** — the target's declared input hash (observability today; the migration
-  primitive toward cache-aware execution).
+  primitive toward cache-aware execution). It **populates only when the target declares an
+  `InputHash(...)` producer** (author-supplied, optional per ADR 0019); `null` otherwise is
+  working-as-designed, not a defect. `outputs` and `remedy` populate automatically — this one is opt-in.
 - **`remedy`** — on failure, a `{ class, reproduce, hint }`: a coarse class (`config` / `code` /
   …), a **command that re-runs just this failure** (e.g. `tamp Compile --rule CS0246`), and the
   reason. The agent gets a next action, not a stack trace to mine.
+
+**Auditing `Produces` coverage.** A build that declares no `Produces` anywhere emits well-formed
+events but records **zero artifacts** — an adoption that *looks* healthy with nil attestation
+value. Two things surface the gap: (1) `tamp --list --format json` (and MCP `list_targets`)
+report each target's **declared** `produces`, so coverage is a query, not a source grep; and
+(2) a run that executes ≥1 target with **zero** `Produces` declared emits a build-level
+`diagnostic.emitted` (`ruleId: tamp.produces.none`, level `note`) on the event stream — visible
+to an attestation consumer, quiet on the human console.
+
+## Reading the build outcome (exit codes)
+
+`tamp` returns the **first failed target's exit code**; `0` only when every target succeeded. A
+failed target aborts the build (later targets go `NotRun`) and the process exits non-zero — this
+has always held for the default `Fatal` mode. `FailureMode.Continue` also **fails** the build
+(records the target `Failed`, exits non-zero); it runs the *remaining* work but does **not** swallow
+the failure (fixed in 1.15.0 — before, a `Continue` failure could report `Done` + exit 0).
+
+**Footgun:** piping or backgrounding the build can replace tamp's exit code with the pipe's —
+`tamp Ci | tail`, `tamp Ci &`, or a CI wrapper reading the wrong process's status will see `0`
+even on failure. Read the exit code from `tamp` **directly**, or — more robustly for automation —
+key off **`build.finished.exitCode`** in the event stream (`--events` / `--reporter=json`), which
+is immune to shell plumbing. Never infer pass/fail by scraping console text.
 
 ## `tamp mcp` — the control surface
 

@@ -230,6 +230,16 @@ public interface ITargetDefinition
     // Idempotency / caching
     ITargetDefinition Idempotent();
     ITargetDefinition InputHash(Func<string> hashProducer);
+
+    /// <summary>
+    /// Declare an output this target produces, as a glob <b>relative to the worktree root</b>
+    /// (<see cref="TampBuild.RootDirectory"/>) — e.g. <c>"artifacts/*.nupkg"</c>. Populates
+    /// <c>target.finished.outputs</c> (path + sha256 + kind + size) and emits one
+    /// <c>artifact.produced</c> event per matched file. A glob matching no files yields empty
+    /// outputs on a normal run, but is treated as a missing artifact by slice-running and
+    /// <b>fail-closes <c>--from</c></b> — so declare only what the target produces unconditionally,
+    /// and put conditional outputs on the target that actually emits them.
+    /// </summary>
     ITargetDefinition Produces(string globPattern);
     ITargetDefinition RunMode(RunMode mode);
 

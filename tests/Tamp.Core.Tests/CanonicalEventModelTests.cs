@@ -52,7 +52,14 @@ public sealed class CanonicalEventModelTests
     public void Emits_BuildStarted_Then_Target_Events_Then_BuildFinished()
     {
         var (events, _) = RunCaptured();
-        var types = events.Select(e => e.Type).ToList();
+        // Lifecycle order only — ignore interspersed diagnostics/artifacts (this fixture declares
+        // no Produces, so it triggers the #63 zero-Produces advisory before build.finished).
+        var lifecycle = new HashSet<string>
+        {
+            BuildEventTypes.BuildStarted, BuildEventTypes.TargetStarted,
+            BuildEventTypes.TargetFinished, BuildEventTypes.BuildFinished,
+        };
+        var types = events.Select(e => e.Type).Where(lifecycle.Contains).ToList();
         Assert.Equal(new[]
         {
             BuildEventTypes.BuildStarted,

@@ -29,7 +29,8 @@ public sealed class BuildEventsAmbientTests
         var sink = new CapturingSink();
         new Executor(new TargetGraph(targets), output: TextWriter.Null, eventSink: sink).Run("Run");
 
-        var diag = sink.Events.Single(e => e.Type == BuildEventTypes.DiagnosticEmitted);
+        var diag = sink.Events.Single(e => e.Type == BuildEventTypes.DiagnosticEmitted
+            && ((DiagnosticEmittedPayload)e.Payload).RuleId == "CS1002");   // not the #63 build-level advisory
         var targetStarted = sink.Events.Single(e => e.Type == BuildEventTypes.TargetStarted && e.TargetId == "Run");
 
         Assert.Equal("Run", diag.TargetId);
