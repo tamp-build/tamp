@@ -347,11 +347,11 @@ public abstract partial class TampBuild
         {
             build = new T();
 
-            // List-only invocations skip value-injection failures so adopters
-            // can `tamp --list` without every [FromPath] tool being installed
+            // List-only (and --help) invocations skip value-injection failures so adopters
+            // can `tamp --list` / `tamp --help` without every [FromPath] tool being installed
             // on the runner — HoldFast friction #20. Cheap pre-scan; the
             // authoritative flag parse happens later in ParseInvocation.
-            var listOnly = IsListOnlyInvocation(args);
+            var listOnly = IsListOnlyInvocation(args) || IsHelpInvocation(args);
 
             // #16: resolve --rule filters early so target-authoring code can read RuleFilter.
             _ruleFilter = ResolveRuleFilters(args);
@@ -370,6 +370,15 @@ public abstract partial class TampBuild
             SecretBinder.Bind(build, Environment.GetEnvironmentVariable, RegisterSecretForCiMasking);
 
             var targets = CollectTargets(build);
+
+            // #70: --help / -h prints usage + the target list and runs nothing. Handled before the
+            // default-target / unknown-flag machinery so it always works, even alongside a typo.
+            if (IsHelpInvocation(args))
+            {
+                PrintHelp(targets);
+                return 0;
+            }
+
             // Single-default invariant: at most one target across the entire build class (including
             // any partial-class files) may carry `.Default()`. Reflection collects targets from all
             // files uniformly, so this check is naturally file-layout-independent.
@@ -414,7 +423,10 @@ public abstract partial class TampBuild
 
             var graph = new TargetGraph(targets);
 
-            var (mode, targetNames, listMode, showAll, verbosity, skipTargets, skipDeps, format, reporterKind) = ParseInvocation(args, targets);
+            // #70: the declared [Parameter] cli-keys let ParseInvocation tell a real --param from a
+            // typo, so unknown flags fail closed instead of silently running the default graph.
+            var parameterKeys = ParameterBinder.CliKeys(build.GetType());
+            var (mode, targetNames, listMode, showAll, verbosity, skipTargets, skipDeps, format, reporterKind) = ParseInvocation(args, targets, parameterKeys);
 
             // Validate --skip <name> values map to actual targets — typos
             // would otherwise silently no-op (the skip set would just never
@@ -723,13 +735,20 @@ public abstract partial class TampBuild
         for (var i = 0; i < args.Length; i++)
         {
             var a = args[i];
-            if (a.StartsWith("--enforce=", StringComparison.Ordinal))
+            if (a == "--enforce" || a.StartsWith("--enforce=", StringComparison.Ordinal))
             {
-                if (string.Equals(a["--enforce=".Length..].Trim(), "agent", StringComparison.OrdinalIgnoreCase)) mode = CapabilityMode.Agent;
-            }
-            else if (a == "--enforce" && i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
-            {
-                if (string.Equals(args[i + 1].Trim(), "agent", StringComparison.OrdinalIgnoreCase)) mode = CapabilityMode.Agent;
+                // #70: a safety flag must fail CLOSED, not open. A misspelled value (or a bare
+                // --enforce) is a hard error, never a silent Off that leaves side-effects unguarded.
+                var v = a.StartsWith("--enforce=", StringComparison.Ordinal)
+                    ? a["--enforce=".Length..].Trim()
+                    : (i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal) ? args[++i].Trim() : null);
+                mode = v?.ToLowerInvariant() switch
+                {
+                    "agent" => CapabilityMode.Agent,
+                    "off" => CapabilityMode.Off,
+                    _ => throw new InvalidOperationException(
+                        $"Unknown --enforce value '{v}'. Use '--enforce=agent' (or '--enforce=off', the default)."),
+                };
             }
             else if (a == "--allow-side-effects")
             {
@@ -744,6 +763,40 @@ public abstract partial class TampBuild
         return (mode, allow);
     }
 
+    /// <summary>True when the invocation is a help request (<c>--help</c> / <c>-h</c> / <c>-?</c>).</summary>
+    internal static bool IsHelpInvocation(string[] args)
+        => args.Any(a => a is "--help" or "-h" or "-?" or "/?");
+
+    /// <summary>Print usage — recognized flags plus callable targets — and run nothing (#70).</summary>
+    private static void PrintHelp(IReadOnlyDictionary<string, TargetSpec> targets)
+    {
+        PrintBanner(Console.Out);
+        var w = Console.Out;
+        w.WriteLine("Usage: dotnet <build> [targets...] [flags]");
+        w.WriteLine();
+        w.WriteLine("With no target, the .Default()-marked target (or a target named Default/Ci) runs.");
+        w.WriteLine();
+        w.WriteLine("Flags:");
+        w.WriteLine("  --list [--all]           List callable targets (add --format json for machine output).");
+        w.WriteLine("  --list-tree              List targets as a dependency tree.");
+        w.WriteLine("  --plan [--format json]   Show the resolved execution order; run nothing.");
+        w.WriteLine("  --dry-run                Print the command plan without executing.");
+        w.WriteLine("  --from <target>          Run <target> plus its downstream dependents.");
+        w.WriteLine("  --skip <target>          Skip a target; --skip-deps runs only the named target.");
+        w.WriteLine("  --rule <id>              Scope diagnostics to rule id(s) (repeatable).");
+        w.WriteLine("  --events <path>          Write the canonical NDJSON event stream to a file.");
+        w.WriteLine("  --reporter json|text     Machine (canonical NDJSON to stdout) vs human output.");
+        w.WriteLine("  --enforce agent          Deny side-effectful work by default (--allow-side-effects to elevate).");
+        w.WriteLine("  --capture-logs           Tee per-target output to redacted .tamp/logs.");
+        w.WriteLine("  --cache-advice           Report would-skip advisories for unchanged inputs.");
+        w.WriteLine("  --verbosity <level>      quiet | minimal | normal | verbose | diagnostic.");
+        w.WriteLine("  --help, -h               Show this help.");
+        w.WriteLine();
+        w.WriteLine("Any other `--name value` binds a [Parameter] declared on the build.");
+        w.WriteLine();
+        PrintTargetList(targets, tree: false, showAll: false);
+    }
+
     /// <summary>Parse the build invocation: zero-or-more target names plus mode flags.</summary>
     /// <remarks>
     /// All non-flag tokens are target names; the executor runs them as a
@@ -753,8 +806,9 @@ public abstract partial class TampBuild
     /// or <c>Ci</c> if present.
     /// </remarks>
     internal static (ExecutionMode, IReadOnlyList<string>, ListMode, bool ShowAll, LogLevel Verbosity, IReadOnlySet<string> SkipTargets, bool SkipDeps, OutputFormat Format, ReporterKind Reporter) ParseInvocation(
-        string[] args, IReadOnlyDictionary<string, TargetSpec> targets)
+        string[] args, IReadOnlyDictionary<string, TargetSpec> targets, IReadOnlySet<string>? parameterKeys = null)
     {
+        parameterKeys ??= new HashSet<string>(StringComparer.Ordinal);
         var mode = ExecutionMode.Run;
         var listMode = ListMode.None;
         var showAll = false;
@@ -765,6 +819,7 @@ public abstract partial class TampBuild
         var format = OutputFormat.Text;
         var reporterKind = ReporterKind.Text;
         var skipNextValue = false;
+        var unknownFlags = new List<string>();   // #70: fail closed on typos / misspelled flags
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -801,11 +856,26 @@ public abstract partial class TampBuild
                     case "skip-deps":
                         skipDeps = true;
                         break;
-                    // Valueless pre-scan flags (resolved before ParseInvocation): list them
-                    // here as no-ops so they don't fall into the default parameter-binding case
-                    // and swallow a following target name (e.g. `tamp --capture-logs Compile`).
+                    // Valueless pre-scan / mode flags (resolved before ParseInvocation, or handled
+                    // elsewhere): list them here as no-ops so they don't fall into the default
+                    // parameter-binding case and swallow a following target name (e.g.
+                    // `tamp --capture-logs Compile`) — or, post-#70, get flagged as unknown.
                     case "cache-advice":
                     case "capture-logs":
+                    case "allow-side-effects":
+                    case "help":
+                        break;
+                    // Valued pre-scan flags (resolved before ParseInvocation by ResolveEventsTarget /
+                    // ResolveRuleFilters / ResolveFromTarget / ResolveCapabilityMode). No-op here, but
+                    // consume the value token in the space form so it isn't taken as a target name.
+                    case "events":
+                    case "rule":
+                    case "from":
+                    case "downstream":
+                    case "enforce":
+                        if (inlineValue is null && i + 1 < args.Length
+                            && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+                            i++;
                         break;
                     case "format":
                         var formatValue = inlineValue ?? (i + 1 < args.Length ? args[++i] : null);
@@ -828,19 +898,39 @@ public abstract partial class TampBuild
                         };
                         break;
                     default:
-                        // Unknown flag is a parameter binding handled by
-                        // ParameterBinder. If the next arg is a value (not
-                        // a flag), it's the parameter's value — skip it so
-                        // it doesn't get picked up as a target name.
-                        if (inlineValue is null && i + 1 < args.Length
-                            && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
-                            skipNextValue = true;
+                        // A --flag that matches a declared [Parameter] binds it (ParameterBinder
+                        // does the actual binding later; here we just consume its value token).
+                        // Anything else is an UNKNOWN flag — #70: collect it and fail closed after
+                        // the loop rather than silently ignoring it. Silent-ignore let a typo run
+                        // the default graph and, worse, a misspelled safety flag (--enforce) fail
+                        // open. If the next arg is a value (not a flag), consume it either way so a
+                        // typo's value isn't mistaken for a target name.
+                        if (parameterKeys.Contains(key))
+                        {
+                            if (inlineValue is null && i + 1 < args.Length
+                                && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+                                skipNextValue = true;
+                        }
+                        else
+                        {
+                            unknownFlags.Add(raw);
+                            if (inlineValue is null && i + 1 < args.Length
+                                && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+                                skipNextValue = true;
+                        }
                         break;
                 }
                 continue;
             }
             targetNames.Add(raw);
         }
+
+        // #70: fail closed on unrecognized flags — a typo must not silently run the default graph
+        // (nor let a misspelled --enforce disable enforcement). Mirrors --from / capability default-deny.
+        if (unknownFlags.Count > 0)
+            throw new InvalidOperationException(
+                $"Unknown argument{(unknownFlags.Count == 1 ? "" : "s")}: {string.Join(", ", unknownFlags)}. "
+                + "Run with --help to see valid flags and targets.");
 
         if (targetNames.Count == 0 && listMode is ListMode.None)
         {
