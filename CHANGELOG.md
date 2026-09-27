@@ -6,9 +6,39 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 Pre-1.0 versions may break public API freely between minor versions; the `0.x` line is intentionally a stabilization run.
 
-## [Unreleased]
+## [Unreleased] — Agent-first toolchain
 
-- Package now ships XML documentation files (`.xml`) alongside the assembly, so consumers get IntelliSense and API docs. (Mirrors [tamp-build/tamp#3](https://github.com/tamp-build/tamp/pull/50).)
+The headline of this cycle is the **agent-first toolchain** ([ADR 0019](docs/adr/0019-agent-first-toolchain.md), epic [#7](https://github.com/tamp-build/tamp/issues/7)): Tamp now emits a canonical **machine output channel** and exposes an MCP **control surface**, so a coding agent is a first-class parallel worker rather than something screen-scraping the CLI. The guiding rule is *structure first, text second* — the human console is one **projection** of a single canonical event stream, never a separate code path. Everything here is **additive and opt-in**; the human console stays the default and every existing consumer (the 60+ satellites, `tamp-beacon`, `tamp-findings`) keeps working untouched. See [`docs/agent-first.md`](docs/agent-first.md).
+
+### Added
+
+- **Canonical event stream (`BuildEvent`)** — every build fact (build/target lifecycle, tool invoke/exit, diagnostics, artifacts, gates, secret-access) is emitted once as a typed event; the `IBuildReporter` console and the ADR-0018 OpenTelemetry spans/meters are projections of it, not parallel emitters. ([#8](https://github.com/tamp-build/tamp/pull/28), [#10](https://github.com/tamp-build/tamp/pull/32))
+- **Agent NDJSON channel** — `--events <path>` / `TAMP_EVENTS` writes the newline-delimited event firehose to its own sink (additive, LF/UTF-8, flush-per-line); `--reporter=json` gives quiet stdout NDJSON with the banner suppressed. ([#9](https://github.com/tamp-build/tamp/pull/29))
+- **Event vocabulary** — `tool.invoked` / `tool.exited`, `secret.access.requested` (name + capability, never the value), `diagnostic.emitted`, `artifact.produced`, `gate.evaluated`; argv is redaction-scrubbed. ([#11](https://github.com/tamp-build/tamp/pull/30))
+- **Typed target results** — `target.finished` carries `outputs` (path + `sha256` + kind + size, from `Produces` globs), `inputsHash`, and on failure a `remedy { class, reproduce, hint }` — a command that re-runs *just* that failure. Plus the `BuildEvents` ambient emitter for target/helper code, and SARIF → `diagnostic.emitted` mapping. ([#12](https://github.com/tamp-build/tamp/pull/35), [#13](https://github.com/tamp-build/tamp/pull/34))
+- **`tamp mcp` — MCP control surface** — runs Tamp as a Model Context Protocol server (stdio) exposing `list_targets` / `describe_target` / `plan` / `run_target` / `get_result` / `get_log`; plus introspection JSON (`--list` now reports `produces` + `capability`, and `--plan --format json`). ([#22](https://github.com/tamp-build/tamp/pull/40), [#39](https://github.com/tamp-build/tamp/pull/39))
+- **Capability tiers** — targets/commands carry `Safe` / `Grey` / `SideEffectful` (revealing a `Secret` implies side-effectful); `--enforce=agent` denies side effects by default (elevate with `--allow-side-effects`), each decision emitted as `gate.evaluated`. Off by default — humans unaffected. ([#20](https://github.com/tamp-build/tamp/pull/37), [#21](https://github.com/tamp-build/tamp/pull/38))
+- **Slice-running** — `--from <target>` / `--downstream` runs a target plus its transitive dependents, treating upstream as satisfied and **failing closed** when a declared upstream `Produces` artifact is missing. ([#15](https://github.com/tamp-build/tamp/pull/41))
+- **In-target `--rule` filter** — scope a target to specific diagnostic rule ids; integrated into `remedy.reproduce` so a failure's reproduce command is rule-scoped when it can be inferred. ([#16](https://github.com/tamp-build/tamp/pull/42))
+- **Would-skip cache advisory** — `--cache-advice` / `TAMP_CACHE_ADVICE` reports `target.finished.wouldSkip` when a target's declared inputs are unchanged (advisory only — it never actually skips; the migration primitive toward cache-aware execution). ([#17](https://github.com/tamp-build/tamp/pull/43))
+- **Agent economics** — an always-on compact `FAILED (N):` summary (each failure with its reproduce command), plus opt-in `--capture-logs` / `TAMP_CAPTURE_LOGS` addressable per-target logs teed to a **redacted** `.tamp/logs/<buildId>/<target>.log` (secrets never hit disk), surfaced as `target.finished.logPath` and read lazily by MCP `get_log`. ([#23](https://github.com/tamp-build/tamp/pull/44))
+- **Worker identity / attribution** — every event and artifact carries a resolved `workerId` (`TAMP_WORKER_ID` → CI actor → git author → `human:<login>`; agent ids look like `agent:pool/3`). Flows onto the ingest wire as `actor { id, kind }` ([`tamp-ingest-v1`](https://github.com/tamp-build/tamp-ingest-v1) v1.3) and is persisted by `tamp-findings`. ([#19](https://github.com/tamp-build/tamp/pull/45))
+- **`DotNetTestSettings.BlameCrash` / `BlameCrashDumpType`** (`--blame-crash` / `--blame-crash-dump-type mini|full`) across `Tamp.NetCli.V8/V9/V10` — names the in-flight test when the test host process crashes. ([#5](https://github.com/tamp-build/tamp/pull/49))
+- **XML documentation files now ship in the packages** — `dotnet pack` includes `lib/**/*.xml` next to each assembly, so consumers get IntelliSense and parameter docs. ([#3](https://github.com/tamp-build/tamp/pull/50))
+
+### Changed
+
+- **`FailureMode.Continue` no longer masks failure.** A target whose plan fails under `Continue` still runs its remaining plans and does not abort the build — but it is now recorded **Failed** and the process **exits non-zero**, instead of reporting `Done` with exit 0. This is a behavior change: a failing test suite under `Continue` previously produced a green CI run. Opt back into the old shared/soft behavior by dropping the target or gating it with `OnlyWhen`. ([#4](https://github.com/tamp-build/tamp/pull/48))
+- **`Scratch()` directories now live under the worktree** (`.tamp/temp`) rather than the OS temp root, so parallel worktrees don't share scratch and cleanup is worktree-local. ([#14](https://github.com/tamp-build/tamp/pull/36))
+
+### Fixed
+
+- **Secret leak on failure** — `target.finished.OutputTail` (and the `IBuildReporter.OnTargetFailed` tail) captured raw child output; the failure tail is now redacted before it reaches any sink. ([#11](https://github.com/tamp-build/tamp/pull/30))
+- **`ProcessRunner` stdout/stderr race** — concurrent stdout+stderr `DataReceived` writes are now serialized per line, closing a shared-buffer race in the redaction path. ([#31](https://github.com/tamp-build/tamp/pull/33))
+
+### Dependencies
+
+- **SourceLink.GitHub `8.0.0` → `10.0.401`** — clears advisory NU1902 (`Microsoft.Build.Tasks.Git`); fanned across all satellites. ([#26](https://github.com/tamp-build/tamp/pull/26))
 
 ## [1.14.0] — 2026-08-21 — Tamp.Sarif: dynamic-analysis fields
 
