@@ -145,6 +145,13 @@ public static class ProcessRunner
             System.Threading.Interlocked.Add(ref stderrBytes, System.Text.Encoding.UTF8.GetByteCount(e.Data) + System.Environment.NewLine.Length);
             lock (ioLock) stderrSink.WriteLine(e.Data);
         };
+        // #66: announce on the canonical event stream (tool.invoked + secret.access.requested,
+        // sharing one command span parented to the current target). No-op when no build scope is
+        // active (standalone use) or when the executor's own declarative loop is the caller (it
+        // emits these itself and suppresses this). Makes imperative & failure-handler dispatch
+        // visible on --events, not only on the ADR-0018 span above.
+        var cmdEventSpanId = BuildEvents.ToolInvoked(plan);
+
         process.Start();
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
@@ -178,6 +185,9 @@ public static class ProcessRunner
         var durationMs = durationNs / 1_000_000.0;
         var outcome = process.ExitCode == 0 ? TampDiagnostics.Tags.OutcomeSuccess : TampDiagnostics.Tags.OutcomeFailure;
 
+        // #66: pair of the tool.invoked above — records the exit on the same command span.
+        BuildEvents.ToolExited(cmdEventSpanId, plan.Executable, process.ExitCode, durationMs);
+
         if (span is not null)
         {
             span.SetTag(TampDiagnostics.Tags.CmdExitCode, process.ExitCode);
@@ -207,6 +217,27 @@ public static class ProcessRunner
             new KeyValuePair<string, object?>(TampDiagnostics.Tags.OutcomeKey, outcome));
 
         return process.ExitCode;
+    }
+
+    /// <summary>
+    /// Exit-code-safe sibling of <see cref="Execute"/>: dispatch <paramref name="plan"/> and
+    /// <b>throw <see cref="ProcessExecutionException"/> on a non-zero exit</b> instead of returning
+    /// the code for the caller to (easily forget to) check.
+    /// </summary>
+    /// <remarks>
+    /// Use this from an imperative <c>Executes(() =&gt; { ... })</c> body when you dispatch a plan
+    /// yourself — the throw becomes a target failure under the normal failure model. The declarative
+    /// <c>Executes(() =&gt; plan)</c> form already fails the target on a non-zero exit, so prefer it
+    /// when the body is just "run this plan"; reach for <see cref="Run"/> when the body interleaves a
+    /// dispatch with other work. Emits the same canonical <c>tool.invoked</c>/<c>tool.exited</c>
+    /// events as <see cref="Execute"/> (#66).
+    /// </remarks>
+    public static int Run(CommandPlan plan, TextWriter? stdout = null, TextWriter? stderr = null, string? sourceTargetName = null)
+    {
+        var exit = Execute(plan, stdout, stderr, sourceTargetName);
+        if (exit != 0)
+            throw new ProcessExecutionException(exit, $"{plan.Executable} exited with code {exit}.");
+        return exit;
     }
 
     /// <summary>

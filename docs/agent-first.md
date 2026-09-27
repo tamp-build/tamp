@@ -100,6 +100,17 @@ even on failure. Read the exit code from `tamp` **directly**, or — more robust
 key off **`build.finished.exitCode`** in the event stream (`--events` / `--reporter=json`), which
 is immune to shell plumbing. Never infer pass/fail by scraping console text.
 
+**Declarative dispatch is the exit-code-safe form.** Returning a `CommandPlan` from a target —
+`Executes(() => DotNet.Test(...))` — lets the executor dispatch it, check the exit code, and fail
+the target on non-zero (default `Fatal`). If instead you dispatch imperatively inside an
+`Executes(Action)` body, `ProcessRunner.Execute(plan)` **returns** the exit code rather than
+throwing — a body that ignores the return leaves a failing tool as a green target. Prefer the
+declarative form; when a body must interleave a dispatch with other work, use
+`ProcessRunner.Run(plan)`, which **throws** on non-zero so the target fails normally. Either way
+the dispatch now emits canonical `tool.invoked` / `tool.exited` events (a bare
+`ProcessRunner.Execute` used to be invisible on `--events`), and a target that finishes green
+*despite* a non-zero tool exit raises a `tamp.tool.nonzero_ignored` note on the stream.
+
 ## `tamp mcp` — the control surface
 
 `tamp mcp` runs Tamp as a [Model Context Protocol](https://modelcontextprotocol.io) server over
