@@ -8,8 +8,13 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+### Added
+
+- **`--help` / `-h`** — prints usage (the recognized flags) plus the callable target list and runs nothing. Previously there was no help flag, and passing one silently ran the default target graph. ([#70](https://github.com/tamp-build/tamp/issues/70))
+
 ### Changed
 
+- **BREAKING — argument parsing now fails closed.** An **unrecognized `--flag`** (one that is neither a framework flag nor a declared `[Parameter]`) is a **hard error before any target runs**, instead of being silently ignored while the default graph runs. This closes a real hazard: a typo like `--captures-logs` or `--event` used to run the default target set — and on a graph whose default includes publish/deploy, mistyped flags ran side-effectful work. Critically, a **misspelled or invalid `--enforce` value now errors** (e.g. `--enforce=agnet`) rather than silently leaving enforcement **Off** — a safety flag must not fail open. Same fail-closed principle already applied to `--from` (missing-artifact error) and capability tiers (default-deny). If you relied on extra unknown flags being ignored, remove them or declare them as `[Parameter]`s. ([#70](https://github.com/tamp-build/tamp/issues/70))
 - **BREAKING — `--reporter=json` now emits the canonical event stream, not the legacy flat shape.** The stdout machine channel is now the **same ADR-0019 envelope** as `--events` (`schemaVersion` / `type` / `buildId` / `runId` / `traceId` / `spanId` / `workerId` / `seq` / `payload.$type`), with the human console fully suppressed (framework decorations *and* target-body `Console` writes redirected off the stream). The pre-1.15 `JsonBuildReporter` shape (`{"event":"build.start","build_id":…}`, vocabulary `build.start` / `target.end`) is **removed** — an agent keying off stdout now gets one schema across both channels. `--reporter=json` and `--events <file>` can be used together (the stream fans out to both). **Consumers of the old flat shape must update** to the canonical vocabulary (`build.started` / `target.started` / `target.finished` / `build.finished`, status `success|failure|skipped|not_run` on targets, `succeeded|failed` on the build). No first-party consumer used it: [Tamp for VS Code](https://github.com/tamp-build/tamp-vscode) reads `--list --format=json` (the target catalog, unchanged) and streams runs through the terminal, not the build-event stream. The public `JsonBuildReporter` class is gone. ([#68](https://github.com/tamp-build/tamp/issues/68))
 
 ### Fixed

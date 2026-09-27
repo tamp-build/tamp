@@ -133,6 +133,22 @@ public static class ParameterBinder
         }
     }
 
+    /// <summary>
+    /// The set of CLI keys (kebab-case, without the <c>--</c>) that bind a declared
+    /// <c>[Parameter]</c> member on <paramref name="buildType"/> — an explicit
+    /// <c>[Parameter(Name = "…")]</c> wins, else the member name kebab-cased. Used by the
+    /// invocation parser to tell a real <c>--param</c> from a typo so unknown flags can
+    /// fail closed instead of being silently ignored (#70).
+    /// </summary>
+    internal static IReadOnlySet<string> CliKeys(Type buildType)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var m in EnumerateAnnotatedMembers(buildType, flags))
+            keys.Add(m.Attribute.Name ?? ToKebabCase(m.Name));
+        return keys;
+    }
+
     private static IEnumerable<AnnotatedMember> EnumerateAnnotatedMembers(Type type, BindingFlags flags)
     {
         foreach (var p in type.GetProperties(flags))
