@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+    <RootNamespace>Tamp.Components</RootNamespace>
+    <AssemblyName>Tamp.Components</AssemblyName>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Package">
+    <PackageId>Tamp.Components</PackageId>
+    <Description>Reusable Tamp build components (ADR 0020): tool-agnostic target-shape interfaces (IRestore / ICompile / ITest / IPack) that define target names + dependency wiring, and the IHaz* injection contracts (IHazSolution / IHazConfiguration / IHazArtifacts) a build satisfies. The concrete tool bodies ship separately as Tamp.Components.NetCli.V{N}. Compose a standard build with `class Build : TampBuild, ICompile, ITest, IPack`.</Description>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Tamp.Core\Tamp.Core.csproj" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+  </ItemGroup>
+
+</Project>

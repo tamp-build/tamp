@@ -27,6 +27,7 @@
     <Project Path="src/Tamp.Sarif/Tamp.Sarif.csproj" />
     <Project Path="src/Tamp.Sbom/Tamp.Sbom.csproj" />
     <Project Path="src/Tamp.Security.Pipeline/Tamp.Security.Pipeline.csproj" />
+    <Project Path="src/Tamp.Components/Tamp.Components.csproj" />
   </Folder>
   <Folder Name="/build/">
     <Project Path="build/Build.csproj" />
@@ -42,5 +43,6 @@
     <Project Path="tests/Tamp.Sarif.Tests/Tamp.Sarif.Tests.csproj" />
     <Project Path="tests/Tamp.Sbom.Tests/Tamp.Sbom.Tests.csproj" />
     <Project Path="tests/Tamp.Security.Pipeline.Tests/Tamp.Security.Pipeline.Tests.csproj" />
+    <Project Path="tests/Tamp.Components.Tests/Tamp.Components.Tests.csproj" />
   </Folder>
 </Solution>
