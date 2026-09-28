@@ -45,6 +45,42 @@ public static class BuildEvents
         });
     }
 
+    /// <summary>
+    /// Emit a <c>conformance.evaluated</c> event (ADR 0023) — an ADR-conformance verdict. No-op if
+    /// inactive. <paramref name="verdict"/> is four-valued (<see cref="ConformanceVerdict"/>);
+    /// <paramref name="adrQuote"/> + <paramref name="codeEvidence"/> are the required structured reason
+    /// on a <c>fail</c>.
+    /// </summary>
+    public static void Conformance(
+        string adrRef,
+        string ruleId,
+        string verdict,
+        string method,
+        string? adrQuote = null,
+        string? codeEvidence = null,
+        string? file = null,
+        int? line = null,
+        bool blocks = false,
+        Provenance? provenance = null,
+        IReadOnlyList<string>? controlRefs = null)
+    {
+        var scope = Current.Value;
+        if (scope is null) return;
+        scope.Emit(BuildEventTypes.ConformanceEvaluated, new ConformanceEvaluatedPayload
+        {
+            AdrRef = adrRef,
+            RuleId = ruleId,
+            Verdict = verdict,
+            Method = method,
+            AdrQuote = adrQuote,
+            CodeEvidence = codeEvidence,
+            Location = file is null ? null : new DiagnosticLocation { File = file, Line = line },
+            Blocks = blocks,
+            Provenance = provenance,
+            ControlRefs = controlRefs,
+        });
+    }
+
     /// <summary>Emit an <c>artifact.produced</c> event. No-op if inactive. (The framework also synthesizes these from a target's <c>Produces</c> globs; this is for explicit/incremental announcements from target code.)</summary>
     public static void Artifact(string path, string? hash = null, string? kind = null, long? sizeBytes = null)
     {

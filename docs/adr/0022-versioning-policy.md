@@ -52,8 +52,10 @@ Supporting rules:
 
 ## Consequences
 
-- **We can pin feature sets.** "1.16 = Components, 1.17 = migration tooling" holds regardless of how
-  many fix-patches land first. This is the requirement that drove the ADR.
+- **We can pin feature sets.** "1.17 = Components + attestation contract, 1.18 = migration tooling"
+  holds regardless of how many fix-patches land first. (1.16 was skipped: Components was complete but
+  unreleased, so it bundled into 1.17 rather than forcing a redundant release — the pin *moves* with a
+  deliberate roadmap decision, it does not drift.) This is the requirement that drove the ADR.
 - **A patch may contain a breaking change.** This deviates from strict SemVer. It is safe here
   *only because consumers pin exactly* (no auto-propagation) and read the changelog. If we ever
   publish for consumers who float version ranges, revisit this ADR.

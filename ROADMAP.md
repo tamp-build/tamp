@@ -25,9 +25,12 @@ and small additions land here as patches; see the changelog for each.
 
 ## Next
 
-### 1.16.0 — Tamp.Components
+### 1.17.0 — Tamp.Components + Attestation evidence contract
 
-Reusable targets via interface mixins — `class Build : TampBuild, ICompile, ITest, IPack` — so the
+*(1.16 skipped — Components was complete and unreleased; bundled into 1.17 with the attestation
+contract to avoid a redundant release push.)*
+
+**Tamp.Components.** Reusable targets via interface mixins — `class Build : TampBuild, ICompile, ITest, IPack` — so the
 ~60 satellites stop hand-copying the same `Restore → Compile → Test → Pack → Ci` shape and instead
 pick up improvements by a package bump. Also gives every tamp-built repo a **uniform, agent-facing
 target topology** (predictable `Compile`/`Test`/`Pack`/`Ci` under `tamp mcp`).
@@ -35,7 +38,15 @@ target topology** (predictable `Compile`/`Test`/`Pack`/`Ci` under `tamp mcp`).
 - Plan of record: [ADR 0020](docs/adr/0020-tamp-components.md) · Tracking: epic
   [#57](https://github.com/tamp-build/tamp/issues/57)
 
-### 1.17.0 — NUKE → Tamp assisted migration
+**Attestation evidence contract.** Additive `BuildEvent` surface for compliance evidence: a
+`conformance.evaluated` event (four-valued verdict + structured reason), a reusable `Provenance`
+sub-record, and optional `ControlRefs` (control mapping). The wire contract that downstream
+`tamp-findings` ingests as attestation-grade evidence; the ADR-conformance review tooling that
+produces it lives in a separate satellite.
+
+- Plan of record: [ADR 0023](docs/adr/0023-attestation-evidence-contract.md)
+
+### 1.18.0 — NUKE → Tamp assisted migration
 
 Tooling to convert an existing NUKE build to Tamp: the mapping reference (shipped) plus a converter
 **and** an agentic guided migration that walks a repo through the move, using the coverage/gap
