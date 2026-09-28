@@ -38,6 +38,7 @@ public static class BuildEventSchema
         BuildEventTypes.DiagnosticEmitted,
         BuildEventTypes.ArtifactProduced,
         BuildEventTypes.GateEvaluated,
+        BuildEventTypes.ConformanceEvaluated,
     };
 }
 
@@ -56,6 +57,9 @@ public static class BuildEventTypes
     public const string DiagnosticEmitted = "diagnostic.emitted";
     public const string ArtifactProduced = "artifact.produced";
     public const string GateEvaluated = "gate.evaluated";
+
+    /// <summary>Attestation evidence contract (ADR 0023): an ADR-conformance verdict.</summary>
+    public const string ConformanceEvaluated = "conformance.evaluated";
 }
 
 /// <summary>Pinned status vocabulary for <see cref="TargetFinishedPayload.Status"/> and <see cref="BuildFinishedPayload.Status"/>.</summary>
@@ -65,4 +69,38 @@ public static class BuildEventStatus
     public const string Failure = "failure";
     public const string Skipped = "skipped";
     public const string NotRun = "not_run";
+}
+
+/// <summary>
+/// Pinned four-valued verdict vocabulary for <see cref="ConformanceEvaluatedPayload.Verdict"/>
+/// (ADR 0023), matching the downstream tamp-findings model (ADR 0001). <see cref="Unknown"/> and
+/// <see cref="Error"/> both block — but with different remedies than <see cref="Fail"/> — and neither
+/// is ever a silent pass.
+/// </summary>
+public static class ConformanceVerdict
+{
+    /// <summary>Code honors the rule.</summary>
+    public const string Pass = "pass";
+
+    /// <summary>Violation, carrying the ADR quote + code evidence.</summary>
+    public const string Fail = "fail";
+
+    /// <summary>A semantic check could not decide, or a deterministic probe never ran. Blocks; "your check didn't answer."</summary>
+    public const string Unknown = "unknown";
+
+    /// <summary>Evaluation itself broke. Blocks; alert an operator.</summary>
+    public const string Error = "error";
+}
+
+/// <summary>Pinned method vocabulary for <see cref="ConformanceEvaluatedPayload.Method"/> / <see cref="Provenance.Method"/> (ADR 0023).</summary>
+public static class ConformanceMethod
+{
+    /// <summary>A pure predicate over the finding vocabulary (grep/AST); reproducible.</summary>
+    public const string Deterministic = "deterministic";
+
+    /// <summary>A model-produced judgement; non-pure — its verdict is snapshot, not recomputed.</summary>
+    public const string Semantic = "semantic";
+
+    /// <summary>The adversarial verify pass that decides fail-vs-unknown for a semantic claim.</summary>
+    public const string Verify = "verify";
 }

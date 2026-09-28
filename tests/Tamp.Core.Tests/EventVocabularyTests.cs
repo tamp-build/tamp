@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text.Json;
 using Xunit;
 
 namespace Tamp.Core.Tests;
@@ -107,6 +108,14 @@ public sealed class EventVocabularyTests
             Wrap(new DiagnosticEmittedPayload { RuleId = "CS1002", Level = "error", Message = "; expected", Location = new DiagnosticLocation { File = "Foo.cs", Line = 88 } }, BuildEventTypes.DiagnosticEmitted),
             Wrap(new ArtifactProducedPayload { Path = "bin/x.dll", Hash = "sha256:abc", Kind = "assembly", SizeBytes = 123 }, BuildEventTypes.ArtifactProduced),
             Wrap(new GateEvaluatedPayload { Gate = "criticalCves", Verdict = "pass", Blocks = true }, BuildEventTypes.GateEvaluated),
+            Wrap(new ConformanceEvaluatedPayload
+            {
+                AdrRef = "0018", RuleId = "0018-r1", Verdict = ConformanceVerdict.Fail, Method = ConformanceMethod.Semantic,
+                AdrQuote = "diagnostics are additive-only", CodeEvidence = "renamed gate.evaluated", Blocks = true,
+                Location = new DiagnosticLocation { File = "src/Tamp.Core/BuildEventSchema.cs", Line = 40 },
+                Provenance = new Provenance { CommitSha = "abc123", RulesSha = "sha256:def", Method = ConformanceMethod.Semantic, ModelId = "claude-opus-4-8", VerifyVerdict = ConformanceVerdict.Fail },
+                ControlRefs = new[] { "CM-6", "SA-15" },
+            }, BuildEventTypes.ConformanceEvaluated),
         };
 
         foreach (var e in samples)
@@ -116,5 +125,53 @@ public sealed class EventVocabularyTests
             Assert.Equal(e.Type, back!.Type);
             Assert.Equal(e.Payload.GetType(), back.Payload.GetType());
         }
+    }
+
+    // ─── conformance.evaluated (ADR 0023) — attestation evidence contract ──
+
+    [Fact]
+    public void Conformance_Verdict_Vocabulary_Is_Four_Valued_And_Distinct()
+    {
+        // Unknown/Error are representable and NOT the same as pass — the load-bearing distinction.
+        var set = new HashSet<string>
+        {
+            ConformanceVerdict.Pass, ConformanceVerdict.Fail, ConformanceVerdict.Unknown, ConformanceVerdict.Error,
+        };
+        Assert.Equal(4, set.Count);
+        Assert.Equal("unknown", ConformanceVerdict.Unknown);
+        Assert.NotEqual(ConformanceVerdict.Pass, ConformanceVerdict.Unknown);
+    }
+
+    [Fact]
+    public void Conformance_Event_Preserves_Reason_Provenance_And_Controls_Through_Ndjson()
+    {
+        var e = new BuildEvent
+        {
+            Type = BuildEventTypes.ConformanceEvaluated, BuildId = "b", RunId = "r", TraceId = "b",
+            SpanId = "0123456789abcdef", WorkerId = "agent:tamp", Seq = 0,
+            Payload = new ConformanceEvaluatedPayload
+            {
+                AdrRef = "0018", RuleId = "0018-r1", Verdict = ConformanceVerdict.Unknown, Method = ConformanceMethod.Deterministic,
+                Blocks = true,
+                Provenance = new Provenance { CommitSha = "abc123", RulesSha = "sha256:def", ModelId = null },
+                ControlRefs = new[] { "CM-6" },
+            },
+        };
+
+        var json = BuildEventJson.Serialize(e);
+        using var doc = JsonDocument.Parse(json);
+        var payload = doc.RootElement.GetProperty("payload");
+
+        Assert.Equal("conformance.evaluated", payload.GetProperty("$type").GetString());   // discriminator
+        Assert.Equal("unknown", payload.GetProperty("verdict").GetString());               // four-valued, not pass/fail
+        Assert.Equal("abc123", payload.GetProperty("provenance").GetProperty("commitSha").GetString());  // camelCase, nested
+        Assert.Equal("CM-6", payload.GetProperty("controlRefs")[0].GetString());
+        Assert.False(payload.TryGetProperty("adrQuote", out _));                            // null reason dropped
+        Assert.False(payload.GetProperty("provenance").TryGetProperty("modelId", out _));   // null nested field dropped
+
+        var back = (ConformanceEvaluatedPayload)BuildEventJson.Deserialize(json)!.Payload;
+        Assert.Equal(ConformanceVerdict.Unknown, back.Verdict);
+        Assert.Equal("abc123", back.Provenance!.CommitSha);
+        Assert.Equal(new[] { "CM-6" }, back.ControlRefs);
     }
 }

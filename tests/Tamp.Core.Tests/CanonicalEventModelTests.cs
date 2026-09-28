@@ -160,8 +160,9 @@ public sealed class CanonicalEventModelTests
             "build.started", "build.finished", "target.started", "target.finished",
             "tool.invoked", "tool.exited", "secret.access.requested",
             "diagnostic.emitted", "artifact.produced", "gate.evaluated",
+            "conformance.evaluated",
         }, BuildEventSchema.Types);
-        Assert.Equal("1.0", BuildEventSchema.Version);
+        Assert.Equal("1.0", BuildEventSchema.Version);   // additive change keeps the schema version
     }
 
     // ─── NDJSON round-trip + wire shape ───────────────────────────────────

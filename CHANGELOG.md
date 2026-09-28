@@ -8,11 +8,15 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
-## [1.16.0] — unreleased — Tamp.Components (in progress)
+## [1.17.0] — unreleased — Tamp.Components + Attestation evidence contract
 
-The 1.16 line: **[Tamp.Components](docs/adr/0020-tamp-components.md)** — reusable targets via interface mixins ([epic #57](https://github.com/tamp-build/tamp/issues/57)). Building up over several phases; this section fills in as they land.
+**1.16 was skipped** — Components was complete but unreleased, so it bundles into 1.17 alongside the attestation evidence contract rather than forcing a redundant release push (per [ADR 0022](docs/adr/0022-versioning-policy.md); the migration tooling that had held 1.17 moves to 1.18).
+
+The 1.17 line pairs **[Tamp.Components](docs/adr/0020-tamp-components.md)** — reusable targets via interface mixins ([epic #57](https://github.com/tamp-build/tamp/issues/57)) — with the **[attestation evidence contract](docs/adr/0023-attestation-evidence-contract.md)** — the additive `BuildEvent` surface downstream `tamp-findings` ingests as compliance evidence.
 
 ### Added
+
+- **Attestation evidence contract (ADR 0023).** New `conformance.evaluated` `BuildEvent` for ADR-conformance evidence, carrying a four-valued `ConformanceVerdict` (`pass`/`fail`/`unknown`/`error` — matching the downstream `tamp-findings` model, where "the check never ran" is `unknown` and blocks, not a silent pass), the structured reason (`adrQuote` + `codeEvidence`), a reusable `Provenance` sub-record (`commitSha`/`rulesSha`/`method`/`modelId`/`verifyVerdict`) that lets a non-deterministic (LLM-produced) verdict be frozen as reproducible evidence, and optional `controlRefs` (control mapping, e.g. `CM-6`/`SA-15`). Emitted via `BuildEvents.Conformance(...)`. Fully **additive** — schema stays `1.0`; existing consumers are unaffected. The ADR-conformance review tooling that produces these events lives in a separate satellite; `diagnostic.emitted` enrichment (provenance/controls on other evidence sources) is a deliberate follow-up.
 
 - **Interface target discovery (Phase 1, load-bearing).** `TampBuild.CollectTargets` now also walks the build's interfaces and collects `Target`-typed **default interface members**, so a build can compose targets from component interfaces: `class Build : TampBuild, ICompile, ITest, IPack`. A same-named `Target` on the build class (or a base class) **overrides** the component's (class-precedence); two *different* interfaces contributing the same target name with no class override is a **fail-closed** error naming both; and component target lambdas join the method map so a component can `.DependsOn(...)` another component's target by reference. Fully **additive** — a build implementing no component interface behaves exactly as before.
 - **`Tamp.Components` package (Phase 2).** Tool-agnostic contracts: the `IHaz*` injection interfaces (`IHazSolution` / `IHazConfiguration` / `IHazArtifacts`) a build satisfies from its injected members, and the target-shape interfaces `IRestore` / `ICompile` / `ITest` / `IPack` that define target names + dependency wiring (Restore → Compile → { Test, Pack }) while leaving the tool call abstract — a `*Plan()` member that returns a `CommandPlan`, which the executor dispatches declaratively (fails the target on a non-zero exit; emits `tool.invoked`/`tool.exited`). Depends only on `Tamp.Core`.

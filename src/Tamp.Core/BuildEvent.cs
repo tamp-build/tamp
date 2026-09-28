@@ -78,6 +78,7 @@ public sealed record BuildEvent
 [JsonDerivedType(typeof(DiagnosticEmittedPayload), BuildEventTypes.DiagnosticEmitted)]
 [JsonDerivedType(typeof(ArtifactProducedPayload), BuildEventTypes.ArtifactProduced)]
 [JsonDerivedType(typeof(GateEvaluatedPayload), BuildEventTypes.GateEvaluated)]
+[JsonDerivedType(typeof(ConformanceEvaluatedPayload), BuildEventTypes.ConformanceEvaluated)]
 public abstract record BuildEventPayload;
 
 /// <summary><see cref="BuildEventTypes.BuildStarted"/> — emitted once at the top of a run.</summary>
@@ -255,4 +256,70 @@ public sealed record GateEvaluatedPayload : BuildEventPayload
 
     public bool Blocks { get; init; }
     public string? Reason { get; init; }
+}
+
+/// <summary>
+/// Reusable provenance envelope for evidence events (ADR 0023). The <see cref="BuildEvent.WorkerId"/>
+/// envelope names the actor and <see cref="BuildEvent.Ts"/> the time; this adds the <i>what</i>: the
+/// revision evaluated, which rule-set produced the verdict, and — for non-deterministic (model-produced)
+/// verdicts — the model and the adversarial verify result. <c>CommitSha</c> + <c>RulesSha</c> are the
+/// pair that make the verdict reconstructible at a point in time (the "snapshot the verdict" posture a
+/// non-pure rule requires; see tamp-findings ADR 0001).
+/// </summary>
+public sealed record Provenance
+{
+    /// <summary>The revision under evaluation (from <c>GitRepository</c>).</summary>
+    public string? CommitSha { get; init; }
+
+    /// <summary>Content hash of the rule-set that produced the verdict (e.g. <c>AbsolutePath.Sha256Of</c>) — pins which interpretation was in force.</summary>
+    public string? RulesSha { get; init; }
+
+    /// <summary><c>deterministic</c> | <c>semantic</c> | <c>verify</c>; mirrors the payload's method for standalone consumption.</summary>
+    public string? Method { get; init; }
+
+    /// <summary>For <c>semantic</c>/<c>verify</c>: the model that produced the verdict.</summary>
+    public string? ModelId { get; init; }
+
+    /// <summary>The adversarial verify pass's result, when one ran.</summary>
+    public string? VerifyVerdict { get; init; }
+}
+
+/// <summary>
+/// <see cref="BuildEventTypes.ConformanceEvaluated"/> — an ADR-conformance verdict against a repo's
+/// code (ADR 0023). Producers live in a satellite; the payload is the wire contract that downstream
+/// <c>tamp-findings</c> ingests as attestation-grade evidence. <see cref="Verdict"/> is four-valued
+/// (see <see cref="ConformanceVerdict"/>): <c>unknown</c> (a semantic check could not decide, or a
+/// deterministic probe never ran) blocks with a different remedy than <c>fail</c> and is never a
+/// silent pass. On <c>fail</c>, <see cref="AdrQuote"/> + <see cref="CodeEvidence"/> are the required
+/// structured reason (a claim that cannot quote both sides is <c>unknown</c>, not <c>fail</c>).
+/// </summary>
+public sealed record ConformanceEvaluatedPayload : BuildEventPayload
+{
+    /// <summary>The ADR this verdict is against (e.g. <c>"0018"</c>, or a repo-qualified ref for cross-repo).</summary>
+    public required string AdrRef { get; init; }
+
+    /// <summary>The rule within that ADR's rule-set (e.g. <c>"0018-r1"</c>).</summary>
+    public required string RuleId { get; init; }
+
+    /// <summary>Four-valued; one of <see cref="ConformanceVerdict"/>.</summary>
+    public required string Verdict { get; init; }
+
+    /// <summary>The ADR text the rule encodes. Required on <c>fail</c>.</summary>
+    public string? AdrQuote { get; init; }
+
+    /// <summary>The code line/snippet that conflicts. Required on <c>fail</c>.</summary>
+    public string? CodeEvidence { get; init; }
+
+    public DiagnosticLocation? Location { get; init; }
+
+    /// <summary><c>deterministic</c> | <c>semantic</c> | <c>verify</c> — how the verdict was reached.</summary>
+    public required string Method { get; init; }
+
+    /// <summary>Whether this verdict blocks; enforcement mode is resolved downstream (tamp-findings ADR 0004).</summary>
+    public bool Blocks { get; init; }
+
+    public Provenance? Provenance { get; init; }
+
+    /// <summary>Control identifiers this finding is evidence for (e.g. <c>CM-6</c>, <c>SA-15</c>). The catalogue is consumer-side.</summary>
+    public IReadOnlyList<string>? ControlRefs { get; init; }
 }

@@ -1,6 +1,6 @@
 # ADR 0023: Attestation evidence contract — conformance events, provenance, control mapping
 
-**Status:** Proposed (2026-09-28).
+**Status:** Accepted (2026-09-28); targets Tamp.Core 1.17.0.
 
 **Context.** The agent-first event stream (ADR 0019) and the diagnostics emission contract (ADR 0018) already give Tamp.Core a mature, attestation-adjacent surface: every `BuildEvent` carries `WorkerId` (the producing actor), a UTC timestamp, `BuildId`/`TraceId`/`SpanId` correlation, and serializes to the pinned `tamp-ingest-v1` shape. The vocabulary already includes SARIF-normalized `diagnostic.emitted`, `artifact.produced` (with content hashes), and `gate.evaluated`. The schema is governed **additive-only** (`BuildEventSchema`, pinned by `CanonicalEventSchemaTests`): adding an event type or payload field is non-breaking; renaming or removing one requires an ADR amendment.
 
