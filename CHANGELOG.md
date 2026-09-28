@@ -8,7 +8,7 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
-## [1.17.0] — unreleased — Tamp.Components + Attestation evidence contract
+## [1.17.0] — 2026-09-28 — Tamp.Components + Attestation evidence contract
 
 **1.16 was skipped** — Components was complete but unreleased, so it bundles into 1.17 alongside the attestation evidence contract rather than forcing a redundant release push (per [ADR 0022](docs/adr/0022-versioning-policy.md); the migration tooling that had held 1.17 moves to 1.18).
 
