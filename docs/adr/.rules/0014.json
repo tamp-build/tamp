@@ -1,0 +1,47 @@
+{
+  "adr": "0014",
+  "sourceSha": "331b711af5e44aa7a9c90e76fb1763cfdc1a167b1e665f1989644faedfa3a4a4",
+  "extractedBy": "anthropic/claude-opus-4-8",
+  "rules": [
+    {
+      "id": "0014-r1",
+      "claim": "Where wrappers need to invoke a shell, they invoke pwsh \u2014 never bash, never cmd.",
+      "kind": "deterministic",
+      "forbiddenPattern": "(?i)\\b(bash|cmd(\\.exe)?)\\b",
+      "scope": [
+        "**/*.cs"
+      ],
+      "controlRefs": [
+        "CM-6"
+      ]
+    },
+    {
+      "id": "0014-r2",
+      "claim": "Wrapper shell invocations use pwsh with -NoProfile.",
+      "kind": "deterministic",
+      "scope": [
+        "**/*.cs"
+      ]
+    },
+    {
+      "id": "0014-r3",
+      "claim": "OS-specific behavior branches inside the PowerShell script using $IsWindows/$IsLinux/$IsMacOS, not separate per-OS files.",
+      "kind": "deterministic",
+      "scope": [
+        "**/*.ps1"
+      ]
+    },
+    {
+      "id": "0014-r4",
+      "claim": "The build.sh shim invokes pwsh build.ps1.",
+      "kind": "deterministic",
+      "requiredPattern": "pwsh",
+      "scope": [
+        "**/build.sh"
+      ],
+      "controlRefs": [
+        "CM-6"
+      ]
+    }
+  ]
+}

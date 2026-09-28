@@ -1,0 +1,37 @@
+{
+  "adr": "0007",
+  "sourceSha": "b6f90ec23bd398ee28ece8acf7fc3bd0f1f1a73d87214d765fe7c75dc18dbcbc",
+  "extractedBy": "anthropic/claude-opus-4-8",
+  "rules": [
+    {
+      "id": "0007-r1",
+      "claim": "The project ships an MIT LICENSE file at repo root.",
+      "kind": "deterministic",
+      "requiredPattern": "MIT License",
+      "scope": [
+        "LICENSE"
+      ],
+      "controlRefs": [
+        "CM-6"
+      ]
+    },
+    {
+      "id": "0007-r2",
+      "claim": "Copyright is held by Scott Singleton (legal name, not the BrewingCoder handle).",
+      "kind": "deterministic",
+      "requiredPattern": "Copyright.*Scott Singleton",
+      "scope": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "0007-r3",
+      "claim": "Copyleft (GPL family, MPL) is off the table for outbound license.",
+      "kind": "deterministic",
+      "forbiddenPattern": "(GNU General Public License|GNU Lesser General Public License|Mozilla Public License)",
+      "scope": [
+        "LICENSE"
+      ]
+    }
+  ]
+}

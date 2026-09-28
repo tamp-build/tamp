@@ -1,0 +1,39 @@
+{
+  "adr": "0008",
+  "sourceSha": "4c46888fe689a896ad83b8c3880df87aebab699883ac5daeae036687cb30b2f1",
+  "extractedBy": "anthropic/claude-opus-4-8",
+  "rules": [
+    {
+      "id": "0008-r1",
+      "claim": "The framework maintains a CHANGELOG documenting version trajectory and which packages changed.",
+      "kind": "deterministic",
+      "requiredPattern": "(?i)changelog",
+      "scope": [
+        "CHANGELOG.md"
+      ],
+      "controlRefs": [
+        "CM-3"
+      ]
+    },
+    {
+      "id": "0008-r2",
+      "claim": "Consumers pin specific versions in Directory.Packages.props.",
+      "kind": "deterministic",
+      "requiredPattern": "PackageVersion\\s\u002BInclude",
+      "scope": [
+        "**/Directory.Packages.props"
+      ],
+      "controlRefs": [
+        "CM-2"
+      ]
+    },
+    {
+      "id": "0008-r3",
+      "claim": "Pre-1.0 satellite packages are explicitly marked in the main README status table.",
+      "kind": "deterministic",
+      "scope": [
+        "README.md"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "adr": "0013",
+  "sourceSha": "124f81788042b88da864eba30656a5a57d152081943f1aaacdb810e4cd922960",
+  "extractedBy": "anthropic/claude-opus-4-8",
+  "rules": [
+    {
+      "id": "0013-r1",
+      "claim": "Generated wrapper files use the .g.cs naming convention in a Generated/ directory",
+      "kind": "deterministic",
+      "scope": [
+        "**/Generated/*.g.cs"
+      ],
+      "controlRefs": [
+        "SA-15"
+      ]
+    },
+    {
+      "id": "0013-r2",
+      "claim": "The generator itself is deferred; wrappers are currently hand-authored (no generator implementation shipped)",
+      "kind": "deterministic",
+      "controlRefs": [
+        "SA-15"
+      ]
+    },
+    {
+      "id": "0013-r3",
+      "claim": "Hand-curated wrapper logic (TRX-overwrite mitigation, secret-arg redaction, composition wrappers) stays hand-authored and out of generator scope",
+      "kind": "deterministic",
+      "controlRefs": [
+        "SA-15"
+      ]
+    }
+  ]
+}

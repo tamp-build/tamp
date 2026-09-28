@@ -1,0 +1,64 @@
+{
+  "adr": "0004",
+  "sourceSha": "c4e7254d1e3e0300147b95889a95f0eb2cd25a2da873f008cd527295f743648e",
+  "extractedBy": "anthropic/claude-opus-4-8",
+  "rules": [
+    {
+      "id": "0004-r1",
+      "claim": "The CommandPlan record must expose Executable, Arguments, Environment, WorkingDirectory, Secrets, StandardInput.",
+      "kind": "deterministic",
+      "requiredPattern": "record\\s\u002BCommandPlan",
+      "scope": [
+        "**/CommandPlan.cs"
+      ],
+      "controlRefs": [
+        "CM-6"
+      ]
+    },
+    {
+      "id": "0004-r2",
+      "claim": "CommandPlan carries Secrets as a separate list from arguments for redaction.",
+      "kind": "deterministic",
+      "requiredPattern": "IReadOnlyList\u003CSecret\u003E\\s\u002BSecrets",
+      "scope": [
+        "**/CommandPlan.cs"
+      ],
+      "controlRefs": [
+        "IA-5",
+        "SC-28"
+      ]
+    },
+    {
+      "id": "0004-r3",
+      "claim": "CommandPlan supports stdin-only secret passing via StandardInput.",
+      "kind": "deterministic",
+      "requiredPattern": "string\\?\\s\u002BStandardInput",
+      "scope": [
+        "**/CommandPlan.cs"
+      ]
+    },
+    {
+      "id": "0004-r4",
+      "claim": "Every process-spawning wrapper returns a CommandPlan (via ToCommandPlan or equivalent) rather than executing the CLI directly.",
+      "kind": "deterministic",
+      "scope": [
+        "**/*.cs"
+      ],
+      "controlRefs": [
+        "CM-6"
+      ]
+    },
+    {
+      "id": "0004-r5",
+      "claim": "Redaction is centralized in RedactionTable \u002B RedactingTextWriter; wrappers do not implement their own redaction logic.",
+      "kind": "deterministic",
+      "scope": [
+        "**/*.cs"
+      ],
+      "controlRefs": [
+        "IA-5",
+        "SC-28"
+      ]
+    }
+  ]
+}

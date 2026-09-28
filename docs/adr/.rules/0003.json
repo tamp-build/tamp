@@ -1,0 +1,66 @@
+{
+  "adr": "0003",
+  "sourceSha": "4b843e48fc6fd2434366824ed73be615ce1ef2124efd050a2bfa57fc89548d09",
+  "extractedBy": "anthropic/claude-opus-4-8",
+  "rules": [
+    {
+      "id": "0003-r1",
+      "claim": "A build/Build.csproj of type Exe targeting net10.0",
+      "kind": "deterministic",
+      "requiredPattern": "\u003COutputType\u003E\\s*Exe\\s*\u003C/OutputType\u003E",
+      "scope": [
+        "build/Build.csproj"
+      ],
+      "controlRefs": [
+        "CM-6"
+      ]
+    },
+    {
+      "id": "0003-r2",
+      "claim": "Build project targets net10.0",
+      "kind": "deterministic",
+      "requiredPattern": "\u003CTargetFramework\u003E\\s*net10\\.0\\s*\u003C/TargetFramework\u003E",
+      "scope": [
+        "build/Build.csproj"
+      ],
+      "controlRefs": [
+        "CM-6"
+      ]
+    },
+    {
+      "id": "0003-r3",
+      "claim": "The build class derives from TampBuild",
+      "kind": "deterministic",
+      "requiredPattern": ":\\s*TampBuild",
+      "scope": [
+        "build/Build.cs"
+      ],
+      "controlRefs": [
+        "CM-6"
+      ]
+    },
+    {
+      "id": "0003-r4",
+      "claim": "Build code calls Execute\u003CT\u003E(args) from Main",
+      "kind": "deterministic",
+      "requiredPattern": "Execute\u003C\\s*\\w\u002B\\s*\u003E\\s*\\(\\s*args\\s*\\)",
+      "scope": [
+        "build/Build.cs"
+      ],
+      "controlRefs": [
+        "CM-6"
+      ]
+    },
+    {
+      "id": "0003-r5",
+      "claim": "Build is a plain .NET console project, not a custom DSL or YAML/JSON declarative build file",
+      "kind": "deterministic",
+      "scope": [
+        "build/**"
+      ],
+      "controlRefs": [
+        "CM-6"
+      ]
+    }
+  ]
+}
