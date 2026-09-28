@@ -1148,7 +1148,8 @@ public abstract partial class TampBuild
         // property-getter invocations because the lambda body compiles to a
         // single method.
         var methodMap = new Dictionary<MethodInfo, string>();
-        var targetProperties = new List<(System.Reflection.PropertyInfo Prop, Target Delegate)>();
+        var classTargets = new List<(System.Reflection.PropertyInfo Prop, Target Delegate)>();
+        var classTargetNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (var prop in type.GetProperties(flags))
         {
             if (prop.PropertyType != typeof(Target)) continue;
@@ -1164,13 +1165,41 @@ public abstract partial class TampBuild
             // first wins and subsequent overlap is ignored.
             if (!methodMap.ContainsKey(del.Method))
                 methodMap[del.Method] = prop.Name;
-            targetProperties.Add((prop, del));
+            classTargets.Add((prop, del));
+            classTargetNames.Add(prop.Name);
         }
 
-        // Pass 2: invoke each property's delegate against a TargetDefinition
-        // primed with the method map, so params Target[] calls inside the body
-        // can resolve their references.
-        foreach (var (prop, del) in targetProperties)
+        // Pass 1b (ADR 0020): also collect Target-typed default interface members —
+        // components. `type.GetProperties` returns class + base-class members but NOT
+        // interface DIMs, so a component Target is invisible without this walk. Invoking
+        // the interface PropertyInfo against the build dispatches to the DIM (or to the
+        // class's reimplementation, when present). Grouped by name so class-precedence
+        // and cross-interface ambiguity can be resolved in pass 2b.
+        var componentTargetsByName = new Dictionary<string, List<(Type Iface, string Name, Target Delegate)>>(StringComparer.Ordinal);
+        foreach (var iface in type.GetInterfaces())
+        {
+            foreach (var prop in iface.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (prop.PropertyType != typeof(Target)) continue;
+                if (prop.GetIndexParameters().Length > 0) continue;
+
+                var del = (Target?)prop.GetValue(build);
+                if (del is null)
+                    throw new InvalidOperationException(
+                        $"Component target property '{iface.FullName}.{prop.Name}' returned null.");
+
+                if (!methodMap.ContainsKey(del.Method))
+                    methodMap[del.Method] = prop.Name;
+                if (!componentTargetsByName.TryGetValue(prop.Name, out var list))
+                    componentTargetsByName[prop.Name] = list = new();
+                list.Add((iface, prop.Name, del));
+            }
+        }
+
+        // Pass 2: class targets first — they win over any same-named component target.
+        // Invoke each property's delegate against a TargetDefinition primed with the
+        // method map, so params Target[] calls inside the body can resolve references.
+        foreach (var (prop, del) in classTargets)
         {
             var def = new TargetDefinition(methodMap);
             del(def);
@@ -1179,6 +1208,26 @@ public abstract partial class TampBuild
                 throw new InvalidOperationException(
                     $"Duplicate target name '{spec.Name}' in {type.FullName}.");
             result[spec.Name] = spec;
+        }
+
+        // Pass 2b (ADR 0020): component targets, honoring class-precedence override and
+        // fail-closed ambiguity.
+        foreach (var (name, contributors) in componentTargetsByName)
+        {
+            // Class-precedence: a same-named class/base target overrides the component's.
+            if (classTargetNames.Contains(name)) continue;
+
+            var distinctInterfaces = contributors.Select(c => c.Iface).Distinct().ToList();
+            if (distinctInterfaces.Count > 1)
+                throw new InvalidOperationException(
+                    $"Ambiguous component target '{name}' is contributed by multiple interfaces: "
+                    + string.Join(", ", distinctInterfaces.Select(i => i.FullName)) + ". "
+                    + $"Declare a '{name}' target on {type.FullName} to override it, or rename one component's target.");
+
+            var def = new TargetDefinition(methodMap);
+            contributors[0].Delegate(def);
+            var spec = def.Build(name);
+            result[spec.Name] = spec;   // name is neither a class target nor duplicated (single interface)
         }
 
         return result;
