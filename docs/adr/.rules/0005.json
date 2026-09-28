@@ -1,0 +1,61 @@
+{
+  "adr": "0005",
+  "sourceSha": "535db6e7511f079a86275552479d1fc925fe38fc66d7910dfeb38070c31f7ea9",
+  "extractedBy": "anthropic/claude-opus-4-8",
+  "rules": [
+    {
+      "id": "0005-r1",
+      "claim": "Secret.Reveal() is internal, not public.",
+      "kind": "deterministic",
+      "forbiddenPattern": "public\\s\u002Bstring\\s\u002BReveal\\s*\\(",
+      "scope": [
+        "**/Secret*.cs"
+      ],
+      "controlRefs": [
+        "AC-6",
+        "SC-28"
+      ]
+    },
+    {
+      "id": "0005-r2",
+      "claim": "Secret.ToString() returns \u003CSecret:Name\u003E, never the value.",
+      "kind": "deterministic",
+      "requiredPattern": "ToString\\s*\\(\\s*\\)\\s*=\u003E\\s*\\$?\u0022\u003CSecret:",
+      "scope": [
+        "**/Secret*.cs"
+      ],
+      "controlRefs": [
+        "SC-28",
+        "AU-9"
+      ]
+    },
+    {
+      "id": "0005-r3",
+      "claim": "Secret is a sealed class.",
+      "kind": "deterministic",
+      "requiredPattern": "sealed\\s\u002Bclass\\s\u002BSecret\\b",
+      "scope": [
+        "**/Secret*.cs"
+      ]
+    },
+    {
+      "id": "0005-r4",
+      "claim": "Only assemblies in Tamp.Core\u0027s InternalsVisibleTo list (runner process-spawn path, wrapper assemblies, test project) may call Secret.Reveal().",
+      "kind": "deterministic",
+      "scope": [
+        "**/AssemblyInfo.cs"
+      ],
+      "controlRefs": [
+        "AC-6"
+      ]
+    },
+    {
+      "id": "0005-r5",
+      "claim": "Sensitive values use the distinct Secret type rather than a [Sensitive] attribute on a string.",
+      "kind": "deterministic",
+      "controlRefs": [
+        "SC-28"
+      ]
+    }
+  ]
+}

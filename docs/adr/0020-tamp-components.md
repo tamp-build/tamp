@@ -1,6 +1,6 @@
 # ADR 0020: Tamp.Components — reusable targets via interface mixins
 
-**Status:** Proposed (2026-09-27). Target: **1.16** — a firm milestone on the [roadmap](../../ROADMAP.md) under the versioning policy in [ADR 0022](0022-versioning-policy.md) (a minor is a pinned feature slot; routine fixes ride patches and never consume it). Tracking epic: [#57](https://github.com/tamp-build/tamp/issues/57). Design decisions below are settled; this ADR is the plan of record.
+**Status:** Accepted (2026-09-28) — **shipped in Tamp.Core 1.17.0** (Phases 1–3). Per the versioning policy in [ADR 0022](0022-versioning-policy.md), **1.16 was skipped**: Components was complete and unreleased, so it bundled into 1.17.0 alongside the attestation contract ([ADR 0023](0023-attestation-evidence-contract.md)) rather than forcing a redundant release (see [ROADMAP](../../ROADMAP.md)). Tracking epic: [#57](https://github.com/tamp-build/tamp/issues/57).
 
 ## Context
 

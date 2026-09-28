@@ -1,0 +1,112 @@
+{
+  "adr": "0018",
+  "sourceSha": "c5dd6503886e7b77585041b7fade5527d9459ee88816fe2d3e22b76161a7e62a",
+  "extractedBy": "anthropic/claude-opus-4-8",
+  "rules": [
+    {
+      "id": "0018-r1",
+      "claim": "No third-party telemetry library is referenced from Tamp.Core; Tamp.Core must not depend on OpenTelemetry.*",
+      "kind": "deterministic",
+      "forbiddenPattern": "\u003CPackageReference\\s\u002BInclude=\u0022OpenTelemetry",
+      "scope": [
+        "**/Tamp.Core/**/*.csproj",
+        "**/Tamp.Core.csproj"
+      ],
+      "controlRefs": [
+        "CM-6"
+      ]
+    },
+    {
+      "id": "0018-r2",
+      "claim": "Tamp.Core emits ActivitySource spans and Meter counters/histograms from the .NET BCL.",
+      "kind": "deterministic",
+      "requiredPattern": "System\\.Diagnostics\\.(Metrics)?",
+      "scope": [
+        "**/Tamp.Core/**/*.cs"
+      ],
+      "controlRefs": [
+        "AU-12"
+      ]
+    },
+    {
+      "id": "0018-r3",
+      "claim": "Three namespaced ActivitySource instances named Tamp.Build, Tamp.Build.Targets, Tamp.Build.Commands.",
+      "kind": "deterministic",
+      "requiredPattern": "new ActivitySource\\(\\s*\u0022Tamp\\.Build",
+      "scope": [
+        "**/Tamp.Core/**/*.cs"
+      ],
+      "controlRefs": [
+        "AU-12"
+      ]
+    },
+    {
+      "id": "0018-r4",
+      "claim": "Single Meter named Tamp.Build.",
+      "kind": "deterministic",
+      "requiredPattern": "new Meter\\(\\s*\u0022Tamp\\.Build\u0022",
+      "scope": [
+        "**/Tamp.Core/**/*.cs"
+      ],
+      "controlRefs": [
+        "AU-12"
+      ]
+    },
+    {
+      "id": "0018-r5",
+      "claim": "plan.Arguments content is never emitted as a tag value; only arg counts are recorded.",
+      "kind": "deterministic",
+      "scope": [
+        "**/Tamp.Core/**/*.cs"
+      ],
+      "controlRefs": [
+        "AU-12",
+        "SC-28"
+      ]
+    },
+    {
+      "id": "0018-r6",
+      "claim": "plan.Environment values are never emitted as tag values (secret-leak vector).",
+      "kind": "deterministic",
+      "scope": [
+        "**/Tamp.Core/**/*.cs"
+      ],
+      "controlRefs": [
+        "AU-12",
+        "SC-28"
+      ]
+    },
+    {
+      "id": "0018-r7",
+      "claim": "plan.StandardInput content is never emitted as a tag value.",
+      "kind": "deterministic",
+      "scope": [
+        "**/Tamp.Core/**/*.cs"
+      ],
+      "controlRefs": [
+        "AU-12",
+        "SC-28"
+      ]
+    },
+    {
+      "id": "0018-r8",
+      "claim": "All tag-setters are guarded against null Activity so a build with no telemetry subscribed pays only a null check.",
+      "kind": "deterministic",
+      "scope": [
+        "**/Tamp.Core/**/*.cs"
+      ]
+    },
+    {
+      "id": "0018-r9",
+      "claim": "Permanent tag keys must not be renamed or removed without an ADR amendment (adding new tags is allowed).",
+      "kind": "deterministic",
+      "scope": [
+        "**/Tamp.Core/**/*.cs"
+      ],
+      "controlRefs": [
+        "CM-3",
+        "CM-6"
+      ]
+    }
+  ]
+}

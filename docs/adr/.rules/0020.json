@@ -1,0 +1,62 @@
+{
+  "adr": "0020",
+  "sourceSha": "6b2e76d24ea9246186b90851e0990d49cd64561f3d53a03f885bdb7a1278c3e3",
+  "extractedBy": "anthropic/claude-opus-4-8",
+  "rules": [
+    {
+      "id": "0020-r1",
+      "claim": "CollectTargets walks build.GetType().GetInterfaces() to discover Target-typed properties (default interface members), not only class members.",
+      "kind": "deterministic",
+      "scope": [
+        "**/*.cs"
+      ],
+      "controlRefs": [
+        "CM-6"
+      ]
+    },
+    {
+      "id": "0020-r2",
+      "claim": "Ambiguity is fail-closed: two different interfaces contributing the same target name with no class override is an error at collection time naming both sources.",
+      "kind": "deterministic",
+      "scope": [
+        "**/*.cs"
+      ]
+    },
+    {
+      "id": "0020-r3",
+      "claim": "Components inject values via IHaz* abstract interface properties satisfied by the build, not via an ambient service locator like this.Require\u003CT\u003E().",
+      "kind": "deterministic",
+      "scope": [
+        "**/*.cs"
+      ]
+    },
+    {
+      "id": "0020-r4",
+      "claim": "Rejected: an ambient this.Require\u003CT\u003E() service locator for component injection.",
+      "kind": "deterministic",
+      "forbiddenPattern": "this\\.Require\u003C",
+      "scope": [
+        "**/*.cs"
+      ]
+    },
+    {
+      "id": "0020-r5",
+      "claim": "Tamp.Components depends only on Tamp.Core and keeps SDK/tool coupling out of the reusable contracts.",
+      "kind": "deterministic",
+      "scope": [
+        "**/Tamp.Components/**/*.csproj"
+      ],
+      "controlRefs": [
+        "CM-6"
+      ]
+    },
+    {
+      "id": "0020-r6",
+      "claim": "SDK-coupled concrete component bodies live in Tamp.Components.NetCli.V{N}, following the Tamp.{Family}.V{N} naming convention.",
+      "kind": "deterministic",
+      "scope": [
+        "**/Tamp.Components.NetCli.V*/**/*.csproj"
+      ]
+    }
+  ]
+}

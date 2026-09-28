@@ -1,0 +1,47 @@
+{
+  "adr": "0002",
+  "sourceSha": "c2223509f126a058936379007e0c7884811591eaaf075a0b7f536076462bde82",
+  "extractedBy": "anthropic/claude-opus-4-8",
+  "rules": [
+    {
+      "id": "0002-r1",
+      "claim": "All Tamp package ids follow Tamp.{ToolFamily}{.V{Major}}? \u2014 must start with the fixed brand prefix \u0027Tamp.\u0027",
+      "kind": "deterministic",
+      "requiredPattern": "\u003CPackageId\u003ETamp\\.",
+      "scope": [
+        "**/*.csproj"
+      ],
+      "controlRefs": [
+        "CM-6"
+      ]
+    },
+    {
+      "id": "0002-r2",
+      "claim": "The .V{Major} suffix tracks only a major (integer), not minor/patch \u2014 reject Tamp.*.V{N}_{N} style names.",
+      "kind": "deterministic",
+      "forbiddenPattern": "\u003CPackageId\u003ETamp\\.[A-Za-z0-9]\u002B\\.V\\d\u002B_\\d\u002B",
+      "scope": [
+        "**/*.csproj"
+      ],
+      "controlRefs": [
+        "CM-6"
+      ]
+    },
+    {
+      "id": "0002-r3",
+      "claim": ".V{Major} is present only when the wrapped tool\u0027s CLI surface materially breaks across major versions; otherwise the tool family package is unpinned.",
+      "kind": "deterministic",
+      "scope": [
+        "**/*.csproj"
+      ]
+    },
+    {
+      "id": "0002-r4",
+      "claim": "The version number after .V tracks the wrapped tool\u0027s major version, not the package\u0027s own NuGet semver.",
+      "kind": "deterministic",
+      "scope": [
+        "**/*.csproj"
+      ]
+    }
+  ]
+}

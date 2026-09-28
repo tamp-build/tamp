@@ -1,6 +1,6 @@
 # ADR 0021: NUKE → Tamp assisted migration
 
-**Status:** Proposed (2026-09-27). Tracking epic: [#58](https://github.com/tamp-build/tamp/issues/58). Depends on [ADR 0020](0020-tamp-components.md) (components) for the component-mapping piece.
+**Status:** Proposed (2026-09-27). Target: **1.18** (moved from 1.17 when Components + the attestation contract took the 1.17 slot; see [ROADMAP](../../ROADMAP.md) / [ADR 0022](0022-versioning-policy.md)). Tracking epic: [#58](https://github.com/tamp-build/tamp/issues/58). Depends on [ADR 0020](0020-tamp-components.md) (components) for the component-mapping piece.
 
 ## Context
 
