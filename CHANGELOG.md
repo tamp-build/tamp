@@ -8,6 +8,10 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+### Changed
+
+- **`Tamp.Components.NetCli.V10` Test/Pack bodies match the fleet convention (ADR 0020 Phase 4 enabler).** `IDotNetTest` now collects coverage the way every satellite hand-rolls it — a `trx` logger + the `XPlat Code Coverage` collector, results under `artifacts/test-results`, and (when a `build/coverlet.runsettings` exists) that runsettings file — on top of the existing `--no-build`/`--blame-crash`. `IDotNetPack` now honors the `PACKAGE_VERSION` environment variable (the tag-driven release version), passing it as the `Version` MSBuild property. This closes the gap that blocked the satellite-migration wave: the component defaults previously did plain solution-wide test/pack, so adopting them would have dropped coverage (breaking SonarCloud) and the tag-driven version (breaking releases). With this, a satellite composes `class Build : TampBuild, IDotNetTest, IDotNetPack` and drops its bespoke Test/Pack targets. No public API change; degrades cleanly when no runsettings / `PACKAGE_VERSION` is present.
+
 ### Docs
 
 - **ADR 0005 amended (TAM-196): `Secret.Reveal()` is public, gated by TAMP004.** Reconciled the ADR/code drift the `tamp-conformance` dogfood flagged ([tamp#82](https://github.com/tamp-build/tamp/issues/82)): ADR 0005 still described `Reveal()` as `internal`/IVT-gated, but it became `public` + TAMP004-analyzer-gated in 1.6.0. Added an amendment section documenting the rationale (the IVT gate was friction without protection; the real defenses are `ToString`/redaction/env-masking) and fixed the stale class-doc on `Secret`. No behavior change.
