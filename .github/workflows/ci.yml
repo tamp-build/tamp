@@ -59,7 +59,7 @@ jobs:
         run: dotnet build Tamp.slnx --no-restore --configuration Release
 
       - name: Test
-        run: dotnet test Tamp.slnx --no-build --configuration Release --logger "trx;LogFileName=test-results.trx" --results-directory ./TestResults
+        run: dotnet test Tamp.slnx --no-build --configuration Release --logger "trx;LogFileName=test-results.trx" --results-directory ./TestResults --collect "XPlat Code Coverage" --settings build/coverlet.runsettings
 
       - name: Upload test results
         if: always()
@@ -67,6 +67,64 @@ jobs:
         with:
           name: test-results-${{ matrix.os }}
           path: ./TestResults/**/*.trx
+          if-no-files-found: warn
+
+      # Per-OS coverage: OS-specific code (Windows CredRead, macOS Keychain, Linux
+      # secret-tool) only executes on its own leg, so coverage MUST be merged across
+      # all three legs (see the coverage job) to reflect true cross-OS coverage.
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ matrix.os }}
+          path: ./TestResults/**/coverage.opencover.xml
+          if-no-files-found: warn
+
+  coverage:
+    name: coverage (cross-OS merge)
+    needs: build
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Download coverage artifacts (all OS legs)
+        uses: actions/download-artifact@v6
+        with:
+          pattern: coverage-*
+          path: ./coverage-in
+
+      - name: Merge cross-OS coverage
+        shell: bash
+        run: |
+          set -e
+          dotnet tool install --global dotnet-reportgenerator-globaltool --version 5.5.1
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          # Merge every OS leg's opencover into one Cobertura + text summary. OS-specific
+          # stores are only covered on their own leg; merging unions those hits.
+          reportgenerator \
+            "-reports:./coverage-in/**/coverage.opencover.xml" \
+            "-targetdir:./coverage-report" \
+            "-reporttypes:Cobertura;TextSummary;Html"
+          echo '### Cross-OS coverage' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          sed -n '1,20p' ./coverage-report/Summary.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload merged coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-merged
+          path: ./coverage-report/**
           if-no-files-found: warn
 
   pack:

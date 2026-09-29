@@ -22,7 +22,7 @@ namespace Tamp;
 /// <list type="bullet">
 ///   <item>macOS: <c>security add-generic-password -s tamp -a NUGET_API_KEY -w "ghp_xxx"</c></item>
 ///   <item>Linux: <c>echo "ghp_xxx" | secret-tool store --label="Tamp NUGET_API_KEY" service tamp account NUGET_API_KEY</c></item>
-///   <item>Windows: <c>cmdkey /add:tamp:NUGET_API_KEY /user:tamp /pass:ghp_xxx</c></item>
+///   <item>Windows: <c>cmdkey /generic:tamp:NUGET_API_KEY /user:tamp /pass:ghp_xxx</c></item>
 /// </list>
 /// </remarks>
 public interface IOsSecretStore
@@ -151,8 +151,9 @@ internal sealed class LinuxSecretToolStore : IOsSecretStore
 /// <c>Advapi32.CredReadW</c>. The target name is
 /// <c>tamp:&lt;name&gt;</c>; the credential blob holds the value as
 /// UTF-16. Users add entries via:
-/// <c>cmdkey /add:tamp:NUGET_API_KEY /user:tamp /pass:ghp_xxx</c>
-/// (cmdkey can write but not read; Tamp reads via CredRead).
+/// <c>cmdkey /generic:tamp:NUGET_API_KEY /user:tamp /pass:ghp_xxx</c>
+/// (/generic writes a CRED_TYPE_GENERIC entry CredRead can read; /add is for
+/// domain creds and won't round-trip here. cmdkey writes but can't read; Tamp reads via CredRead).
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal sealed class WindowsCredentialManagerStore : IOsSecretStore
