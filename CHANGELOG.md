@@ -8,6 +8,12 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+## [1.17.3] — 2026-09-29 — TAMP004 approves Tamp.Http
+
+### Changed
+
+- **TAMP004 approves the `Tamp.Http` namespace.** `Secret.Reveal()` inside `Tamp.Http` no longer trips the `SecretRevealOutsideApprovedContextAnalyzer`. Tamp.Http is foundational egress infrastructure — its credential types (`BasicCredential`/`BearerCredential`/`CustomHeaderCredential`) must reveal a `Secret` to build the `Authorization` header, exactly the legitimate wire-egress role already approved for `Tamp.NetCli.V*`. Surfaced when the Components Phase 4 fleet migration bumped tamp-http's `Tamp.Core` (activating the analyzer) flagged its own credential classes. Peer framework-internal; now approved alongside `Tamp.Cli`/`Tamp.NetCli.V*`/`Tamp.Core`.
+
 ## [1.17.2] — 2026-09-29 — Fleet-ready component Test/Pack + ADR reconciliations
 
 Unblocks the [Tamp.Components](docs/adr/0020-tamp-components.md) satellite-migration wave (epic [#57](https://github.com/tamp-build/tamp/issues/57) Phase 4) by making the `NetCli.V10` component bodies match what every satellite actually does, plus records three architectural decisions the `tamp-conformance` reverse-examination dogfood surfaced.

@@ -93,6 +93,10 @@ public sealed class SecretRevealOutsideApprovedContextAnalyzer : DiagnosticAnaly
         if (ns == "Tamp" || ns == "Tamp.Core") return true;
         if (ns.StartsWith("Tamp.Cli", System.StringComparison.Ordinal)) return true;
         if (ns.StartsWith("Tamp.NetCli.V", System.StringComparison.Ordinal)) return true;
+        // Tamp.Http is foundational egress infrastructure (the base HTTP client + auth): its credential
+        // types must reveal a Secret to build the Authorization header — the same legitimate wire-egress
+        // role as Tamp.NetCli.V* building a command line. Peer framework-internal; approved. (TAM-… / tamp-http)
+        if (ns.StartsWith("Tamp.Http", System.StringComparison.Ordinal)) return true;
 
         // Test code — anywhere with .Tests in the namespace or class name ending Tests.
         if (className.EndsWith("Tests", System.StringComparison.Ordinal)) return true;
