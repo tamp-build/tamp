@@ -134,6 +134,24 @@ public sealed class SecretRevealOutsideApprovedContextAnalyzerTests
     }
 
     [Fact]
+    public async Task Tamp_Http_Namespace_Is_Approved()
+    {
+        // Tamp.Http is foundational egress infra: credential types reveal a Secret to build the
+        // Authorization header — the same wire-egress role as Tamp.NetCli.V*. Approved.
+        var source = """
+            using Tamp;
+            namespace Tamp.Http
+            {
+                internal sealed class BearerCredential {
+                    string Header(Secret token) => "Bearer " + token.Reveal();
+                }
+            }
+            """;
+        var diags = await RunAsync(source);
+        Assert.Empty(diags.Where(d => d.Id == "TAMP004"));
+    }
+
+    [Fact]
     public async Task Test_Code_With_Tests_Suffix_Is_Approved()
     {
         var source = """
