@@ -1,0 +1,166 @@
+name: Nightly Findings Ingest
+
+# Overnight full-evidence ingest to tamp-findings: re-runs the build, tests + cross-OS
+# coverage, SBOM, SAST, secrets, and ADR conformance, then pushes it all to findings.
+# Re-posting the SBOM nightly is what surfaces NEW CVEs in unchanged dependencies and
+# SBOM staleness — findings re-evaluates against the current advisory data each time.
+# Ends with a (non-failing) ship-gate report so the dashboard reflects HEAD every morning.
+
+on:
+  schedule:
+    - cron: '0 7 * * *'   # 07:00 UTC ≈ 02:00–03:00 America/New_York
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-ingest
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: '1'
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+  FINDINGS_URL: https://tamp-findings.brewingcoder.com
+
+jobs:
+  # Cross-OS coverage + test results: OS-specific code (Windows CredRead, macOS Keychain,
+  # Linux secret-tool) only executes on its own leg, so coverage is merged across all three.
+  evidence:
+    name: build & coverage (${{ matrix.os }})
+    if: github.repository == 'tamp-build/tamp'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 1 }
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+            10.0.x
+      - name: Restore
+        run: dotnet restore Tamp.slnx
+      - name: Build
+        run: dotnet build Tamp.slnx --no-restore --configuration Release
+      - name: Test + coverage
+        run: dotnet test Tamp.slnx --no-build --configuration Release --logger trx --results-directory ./TestResults --collect "XPlat Code Coverage" --settings build/coverlet.runsettings
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ matrix.os }}
+          path: ./TestResults/**/coverage.opencover.xml
+          if-no-files-found: warn
+      - name: Upload trx
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: trx-${{ matrix.os }}
+          path: ./TestResults/**/*.trx
+          if-no-files-found: warn
+
+  ingest:
+    name: full ingest → findings
+    needs: evidence
+    if: github.repository == 'tamp-build/tamp'
+    runs-on: ubuntu-latest
+    env:
+      FINDINGS_TOKEN: ${{ secrets.FINDINGS_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      EVIDENCE_DIR: ${{ github.workspace }}/artifacts/evidence
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 1 }
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+            10.0.x
+
+      - name: Guard — require FINDINGS_TOKEN
+        run: |
+          if [ -z "$FINDINGS_TOKEN" ]; then
+            echo "::warning::FINDINGS_TOKEN secret not set — skipping ingest."; echo "SKIP=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Restore
+        if: env.SKIP != '1'
+        run: dotnet restore Tamp.slnx
+
+      - name: Build (for conformance source scan)
+        if: env.SKIP != '1'
+        run: dotnet build Tamp.slnx --no-restore --configuration Release
+
+      - name: Stage test results (all OS legs)
+        if: env.SKIP != '1'
+        uses: actions/download-artifact@v6
+        with:
+          pattern: trx-*
+          path: ./_trx
+      - name: Stage coverage (all OS legs)
+        if: env.SKIP != '1'
+        uses: actions/download-artifact@v6
+        with:
+          pattern: coverage-*
+          path: ./_cov
+
+      - name: Assemble evidence (merge cross-OS coverage + collect trx)
+        if: env.SKIP != '1'
+        run: |
+          set -e
+          mkdir -p "$EVIDENCE_DIR/trx" "$EVIDENCE_DIR/coverage"
+          find ./_trx -name '*.trx' -exec cp {} "$EVIDENCE_DIR/trx/" \;
+          dotnet tool install --global dotnet-reportgenerator-globaltool --version 5.5.1
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          reportgenerator "-reports:./_cov/**/coverage.opencover.xml" "-targetdir:$EVIDENCE_DIR/coverage" "-reporttypes:Cobertura"
+
+      - name: SBOM (CycloneDX)
+        if: env.SKIP != '1'
+        run: |
+          dotnet tool install --global CycloneDX --version 6.2.0
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          dotnet CycloneDX Tamp.slnx -o "$EVIDENCE_DIR" -fn sbom.cdx.json -F Json
+
+      - name: SAST (opengrep, best-effort)
+        if: env.SKIP != '1'
+        continue-on-error: true
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/opengrep/opengrep/main/install.sh | bash || { echo "opengrep install failed — skipping SAST"; exit 0; }
+          "$HOME/.opengrep/cli/latest/opengrep" scan --config auto --sarif --output "$EVIDENCE_DIR/opengrep.sarif" . || echo "opengrep scan non-zero — continuing"
+
+      - name: Secrets (trufflehog, best-effort — fails the job on VERIFIED secrets)
+        if: env.SKIP != '1'
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin || { echo "trufflehog install failed — skipping"; exit 0; }
+          trufflehog filesystem . --json --no-update > "$EVIDENCE_DIR/trufflehog.json" 2>/dev/null || true
+          if grep -q '"Verified":true' "$EVIDENCE_DIR/trufflehog.json" 2>/dev/null; then
+            echo "::error::trufflehog found VERIFIED secrets"; exit 1
+          fi
+
+      - name: Resolve version
+        if: env.SKIP != '1'
+        run: |
+          V=$(grep -oE '<Version>[^<]+' Directory.Build.props | head -1 | sed 's/<Version>//')
+          echo "TAMP_VERSION=${V:-0.0.0}" >> "$GITHUB_ENV"
+
+      - name: Ingest → findings
+        if: env.SKIP != '1'
+        env:
+          TAMP_COMMIT: ${{ github.sha }}
+          TAMP_BRANCH: ${{ github.ref_name }}
+          REPO_ROOT: ${{ github.workspace }}
+        run: dotnet run --project tools/findings-ingest/FindingsIngest.csproj -c Release -- ingest
+
+      - name: Ship-gate report (non-failing)
+        if: env.SKIP != '1'
+        continue-on-error: true
+        env:
+          TAMP_COMMIT: ${{ github.sha }}
+        run: dotnet run --project tools/findings-ingest/FindingsIngest.csproj -c Release -- gate

@@ -23,6 +23,10 @@ on:
         description: 'If true, pack + login but do NOT push to nuget.org'
         type: boolean
         default: true
+      skip_findings_gate:
+        description: 'Emergency override: skip the tamp-findings ship gate (publish even if blocked)'
+        type: boolean
+        default: false
 
 permissions:
   id-token: write   # OIDC token for nuget.org trusted publishing
@@ -34,8 +38,95 @@ env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
 
 jobs:
+  # Dogfood our own strict risk policy: build fresh evidence at the tag commit,
+  # push it to tamp-findings, and BLOCK the publish unless the ship gate is clear
+  # (0 blocking gates). Overridable on manual dispatch via skip_findings_gate.
+  findings-gate:
+    name: tamp-findings ship gate
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || inputs.skip_findings_gate == false }}
+    env:
+      DOTNET_NOLOGO: '1'
+      FINDINGS_URL: https://tamp-findings.brewingcoder.com
+      FINDINGS_TOKEN: ${{ secrets.FINDINGS_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      EVIDENCE_DIR: ${{ github.workspace }}/artifacts/evidence
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Guard — require FINDINGS_TOKEN
+        run: |
+          if [ -z "$FINDINGS_TOKEN" ]; then
+            echo "::error::FINDINGS_TOKEN secret not set — cannot run the release gate. Set it or dispatch with skip_findings_gate=true."
+            exit 1
+          fi
+
+      - name: Install supported .NET SDKs
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+            10.0.x
+
+      - name: Resolve version from tag
+        if: github.event_name == 'push'
+        run: echo "TAMP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Restore + build
+        run: |
+          dotnet restore Tamp.slnx
+          dotnet build Tamp.slnx --no-restore --configuration Release
+
+      - name: Test + coverage
+        run: |
+          mkdir -p "$EVIDENCE_DIR/trx" "$EVIDENCE_DIR/coverage"
+          dotnet test Tamp.slnx --no-build --configuration Release --logger trx --results-directory "$EVIDENCE_DIR/trx" --collect "XPlat Code Coverage" --settings build/coverlet.runsettings
+          dotnet tool install --global dotnet-reportgenerator-globaltool --version 5.5.1
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          reportgenerator "-reports:$EVIDENCE_DIR/trx/**/coverage.opencover.xml" "-targetdir:$EVIDENCE_DIR/coverage" "-reporttypes:Cobertura"
+
+      - name: SBOM (CycloneDX)
+        run: |
+          dotnet tool install --global CycloneDX --version 6.2.0
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          dotnet CycloneDX Tamp.slnx -o "$EVIDENCE_DIR" -fn sbom.cdx.json -F Json
+
+      - name: SAST (opengrep, best-effort)
+        continue-on-error: true
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/opengrep/opengrep/main/install.sh | bash || { echo "opengrep install failed"; exit 0; }
+          "$HOME/.opengrep/cli/latest/opengrep" scan --config auto --sarif --output "$EVIDENCE_DIR/opengrep.sarif" . || echo "opengrep scan non-zero — continuing"
+
+      - name: Secrets (trufflehog — fails on VERIFIED secrets)
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin || { echo "trufflehog install failed"; exit 0; }
+          trufflehog filesystem . --json --no-update > "$EVIDENCE_DIR/trufflehog.json" 2>/dev/null || true
+          if grep -q '"Verified":true' "$EVIDENCE_DIR/trufflehog.json" 2>/dev/null; then
+            echo "::error::trufflehog found VERIFIED secrets"; exit 1
+          fi
+
+      - name: Ingest evidence → findings
+        env:
+          TAMP_COMMIT: ${{ github.sha }}
+          TAMP_BRANCH: ${{ github.ref_name }}
+          REPO_ROOT: ${{ github.workspace }}
+        run: dotnet run --project tools/findings-ingest/FindingsIngest.csproj -c Release -- ingest
+
+      - name: Ship gate (HARD — blocks release if not clear)
+        env:
+          TAMP_COMMIT: ${{ github.sha }}
+        run: dotnet run --project tools/findings-ingest/FindingsIngest.csproj -c Release -- gate
+
   publish:
     name: pack + push to nuget.org
+    needs: findings-gate
+    # needs: is skipped cleanly when findings-gate is skipped (dispatch + skip_findings_gate=true),
+    # but only if we don't hard-require success. Allow publish when the gate passed OR was intentionally skipped.
+    if: ${{ always() && (needs.findings-gate.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.skip_findings_gate == true)) }}
     runs-on: ubuntu-latest
     environment: release
 
