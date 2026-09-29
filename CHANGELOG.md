@@ -8,6 +8,10 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+### Docs
+
+- **ADR 0005 amended (TAM-196): `Secret.Reveal()` is public, gated by TAMP004.** Reconciled the ADR/code drift the `tamp-conformance` dogfood flagged ([tamp#82](https://github.com/tamp-build/tamp/issues/82)): ADR 0005 still described `Reveal()` as `internal`/IVT-gated, but it became `public` + TAMP004-analyzer-gated in 1.6.0. Added an amendment section documenting the rationale (the IVT gate was friction without protection; the real defenses are `ToString`/redaction/env-masking) and fixed the stale class-doc on `Secret`. No behavior change.
+
 ## [1.17.1] — 2026-09-28 — Zero-Trust overlay on the conformance evidence contract
 
 Additive extension to the [attestation evidence contract](docs/adr/0023-attestation-evidence-contract.md) shipped in 1.17.0 — a patch, not a milestone (per [ADR 0022](docs/adr/0022-versioning-policy.md); the 1.18 slot stays reserved for the NUKE→Tamp migration). Lets a `conformance.evaluated` verdict carry the Zero-Trust / mandate overlay of the rule that produced it, so downstream `tamp-findings` can score ZTMM maturity and reconcile binary mandates directly from the evidence without re-joining to the rule-set.
