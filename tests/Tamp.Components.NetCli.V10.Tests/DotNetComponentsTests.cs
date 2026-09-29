@@ -52,13 +52,16 @@ public sealed class DotNetComponentsTests
     }
 
     [Fact]
-    public void TestPlan_Is_Dotnet_Test_NoBuild_With_BlameCrash()
+    public void TestPlan_Is_Dotnet_Test_NoBuild_With_BlameCrash_And_Coverage()
     {
         var args = ((ITest)Build).TestPlan().Arguments;
         Assert.Contains("test", args);
         Assert.Contains("Release", args);
-        Assert.Contains("--no-build", args);       // Compile ran as a dependency
-        Assert.Contains(args, a => a.Contains("blame"));   // --blame-crash best practice
+        Assert.Contains("--no-build", args);                          // Compile ran as a dependency
+        Assert.Contains(args, a => a.Contains("blame"));              // --blame-crash best practice
+        Assert.Contains(args, a => a.Contains("trx"));                // trx logger (fleet convention)
+        Assert.Contains(args, a => a.Contains("XPlat Code Coverage"));// coverage collector
+        Assert.Contains(args, a => a.Contains("test-results"));       // results directory under artifacts
     }
 
     [Fact]
@@ -68,5 +71,31 @@ public sealed class DotNetComponentsTests
         Assert.Contains("pack", args);
         Assert.Contains("--no-build", args);
         Assert.Contains(Build.ArtifactsDirectory.Value, args);   // injected IHazArtifacts
+    }
+
+    [Fact]
+    public void PackPlan_Honors_PACKAGE_VERSION_When_Set()
+    {
+        var prev = Environment.GetEnvironmentVariable("PACKAGE_VERSION");
+        try
+        {
+            Environment.SetEnvironmentVariable("PACKAGE_VERSION", "9.9.9-rc.1");
+            var args = ((IPack)Build).PackPlan().Arguments;
+            Assert.Contains(args, a => a.Contains("9.9.9-rc.1"));   // tag-driven version threaded as -p:Version=
+        }
+        finally { Environment.SetEnvironmentVariable("PACKAGE_VERSION", prev); }
+    }
+
+    [Fact]
+    public void PackPlan_Omits_Version_When_PACKAGE_VERSION_Unset()
+    {
+        var prev = Environment.GetEnvironmentVariable("PACKAGE_VERSION");
+        try
+        {
+            Environment.SetEnvironmentVariable("PACKAGE_VERSION", null);
+            var args = ((IPack)Build).PackPlan().Arguments;
+            Assert.DoesNotContain(args, a => a.Contains("Version="));   // no override → static csproj version
+        }
+        finally { Environment.SetEnvironmentVariable("PACKAGE_VERSION", prev); }
     }
 }

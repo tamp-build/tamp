@@ -38,24 +38,50 @@ public interface IDotNetCompile : ICompile, IDotNetRestore
         .SetNoRestore(true));   // Restore ran as a dependency
 }
 
-/// <summary><c>dotnet test</c> body for <see cref="ITest"/> (chains <c>--no-build</c>, enables <c>--blame-crash</c>).</summary>
+/// <summary>
+/// <c>dotnet test</c> body for <see cref="ITest"/>. Chains <c>--no-build</c> and <c>--blame-crash</c>, and
+/// collects coverage the way the tamp fleet does: a <c>trx</c> logger + the <c>XPlat Code Coverage</c>
+/// collector, results under <c>artifacts/test-results</c>, and — when a <c>build/coverlet.runsettings</c>
+/// exists at the repo root — that runsettings file. This makes the component's default match the convention
+/// satellites already hand-roll (so a build can drop its bespoke Test target), while degrading cleanly when
+/// no runsettings is present.
+/// </summary>
 public interface IDotNetTest : ITest, IDotNetCompile
 {
     /// <inheritdoc/>
-    CommandPlan ITest.TestPlan() => DotNet.Test(s => s
-        .SetProject(Solution.Path)
-        .SetConfiguration(Configuration)
-        .SetNoBuild(true)                 // Compile ran as a dependency
-        .SetBlameCrash(true));            // name the in-flight test if the host crashes
+    CommandPlan ITest.TestPlan() => DotNet.Test(s =>
+    {
+        s.SetProject(Solution.Path)
+         .SetConfiguration(Configuration)
+         .SetNoBuild(true)                 // Compile ran as a dependency
+         .SetBlameCrash(true)              // name the in-flight test if the host crashes
+         .AddLogger("trx;LogFileName=test-results.trx")
+         .AddDataCollector("XPlat Code Coverage")
+         .SetResultsDirectory((TampBuild.RootDirectory / "artifacts" / "test-results").Value);
+        var runsettings = TampBuild.RootDirectory / "build" / "coverlet.runsettings";
+        if (System.IO.File.Exists(runsettings.Value))
+            s.SetSettings(runsettings.Value);
+    });
 }
 
-/// <summary><c>dotnet pack</c> body for <see cref="IPack"/> (chains <c>--no-build</c>, outputs to <see cref="IHazArtifacts.ArtifactsDirectory"/>).</summary>
+/// <summary>
+/// <c>dotnet pack</c> body for <see cref="IPack"/>. Chains <c>--no-build</c>, outputs to
+/// <see cref="IHazArtifacts.ArtifactsDirectory"/>, and — when the <c>PACKAGE_VERSION</c> environment variable
+/// is set — passes it as the <c>Version</c> MSBuild property. That matches the fleet's release convention (the
+/// tag drives <c>PACKAGE_VERSION</c>, which overrides the static csproj version at pack time), so a satellite
+/// no longer needs a bespoke Pack target just to thread the release version through.
+/// </summary>
 public interface IDotNetPack : IPack, IDotNetCompile
 {
     /// <inheritdoc/>
-    CommandPlan IPack.PackPlan() => DotNet.Pack(s => s
-        .SetProject(Solution.Path)
-        .SetConfiguration(Configuration)
-        .SetNoBuild(true)                 // Compile ran as a dependency
-        .SetOutput(ArtifactsDirectory));
+    CommandPlan IPack.PackPlan() => DotNet.Pack(s =>
+    {
+        s.SetProject(Solution.Path)
+         .SetConfiguration(Configuration)
+         .SetNoBuild(true)                 // Compile ran as a dependency
+         .SetOutput(ArtifactsDirectory);
+        var version = System.Environment.GetEnvironmentVariable("PACKAGE_VERSION");
+        if (!string.IsNullOrEmpty(version))
+            s.SetProperty("Version", version);   // tag-driven release version overrides the static csproj version
+    });
 }
