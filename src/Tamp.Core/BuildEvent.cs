@@ -322,4 +322,22 @@ public sealed record ConformanceEvaluatedPayload : BuildEventPayload
 
     /// <summary>Control identifiers this finding is evidence for (e.g. <c>CM-6</c>, <c>SA-15</c>). The catalogue is consumer-side.</summary>
     public IReadOnlyList<string>? ControlRefs { get; init; }
+
+    // ── Zero Trust / mandate overlay (additive; schema stays 1.0). Same vocabulary as the rule that
+    // produced the verdict, carried onto the evidence so a consumer (tamp-findings) can score ZTMM
+    // maturity and reconcile binary mandates without re-joining to the rule-set. A maturity verdict
+    // sets the zt-trio; a binary-mandate verdict sets MandateId instead; a plain control verdict sets
+    // neither (today's behavior). The consumer matches the pillar/function case-insensitively by id or name.
+
+    /// <summary>ZTMM pillar this verdict scores (e.g. <c>Identity</c>). Null for non-ZT verdicts.</summary>
+    public string? ZtPillar { get; init; }
+
+    /// <summary>ZTMM function within the pillar (e.g. <c>Authentication</c>). Null for non-ZT verdicts.</summary>
+    public string? ZtFunction { get; init; }
+
+    /// <summary>The maturity stage (1–4) the decision represents — orthogonal to <see cref="Verdict"/>. Null for non-ZT / binary verdicts.</summary>
+    public int? ZtStage { get; init; }
+
+    /// <summary>The binary mandate id this verdict is evidence for (e.g. <c>mfa</c>). Set instead of the zt-trio for a mandate verdict; null otherwise.</summary>
+    public string? MandateId { get; init; }
 }

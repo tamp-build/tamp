@@ -49,7 +49,9 @@ public static class BuildEvents
     /// Emit a <c>conformance.evaluated</c> event (ADR 0023) — an ADR-conformance verdict. No-op if
     /// inactive. <paramref name="verdict"/> is four-valued (<see cref="ConformanceVerdict"/>);
     /// <paramref name="adrQuote"/> + <paramref name="codeEvidence"/> are the required structured reason
-    /// on a <c>fail</c>.
+    /// on a <c>fail</c>. The optional <paramref name="ztPillar"/>/<paramref name="ztFunction"/>/
+    /// <paramref name="ztStage"/> (maturity) or <paramref name="mandateId"/> (binary mandate) carry the
+    /// producing rule's Zero-Trust overlay onto the evidence (additive; schema stays 1.0).
     /// </summary>
     public static void Conformance(
         string adrRef,
@@ -62,7 +64,11 @@ public static class BuildEvents
         int? line = null,
         bool blocks = false,
         Provenance? provenance = null,
-        IReadOnlyList<string>? controlRefs = null)
+        IReadOnlyList<string>? controlRefs = null,
+        string? ztPillar = null,
+        string? ztFunction = null,
+        int? ztStage = null,
+        string? mandateId = null)
     {
         var scope = Current.Value;
         if (scope is null) return;
@@ -78,6 +84,10 @@ public static class BuildEvents
             Blocks = blocks,
             Provenance = provenance,
             ControlRefs = controlRefs,
+            ZtPillar = ztPillar,
+            ZtFunction = ztFunction,
+            ZtStage = ztStage,
+            MandateId = mandateId,
         });
     }
 
