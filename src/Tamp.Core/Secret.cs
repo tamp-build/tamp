@@ -3,9 +3,11 @@ namespace Tamp;
 /// <summary>
 /// A typed wrapper around a sensitive value (API key, password, token).
 /// The type system makes accidental leaks harder: <see cref="ToString"/> never
-/// returns the value, and the value is reachable only via <see cref="Reveal"/>
-/// which is internal-only — visible to the runner's process-spawn path and to
-/// tests, but not to wrappers, build scripts, or arbitrary library code.
+/// returns the value, and obtaining the raw value requires an explicit, grep-able
+/// <see cref="Reveal"/> call — which the <c>TAMP004</c> analyzer flags outside
+/// approved contexts (as of Tamp.Core 1.6.0 / TAM-196; see ADR 0005). The
+/// load-bearing leak defenses (<see cref="ToString"/>, the <see cref="CommandPlan.Secrets"/>
+/// redaction table, and the runner's env masking) do not depend on <see cref="Reveal"/>'s visibility.
 /// </summary>
 /// <remarks>
 /// What this type prevents: accidental inclusion of the secret in log output,
