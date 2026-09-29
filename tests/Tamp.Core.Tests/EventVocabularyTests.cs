@@ -173,5 +173,52 @@ public sealed class EventVocabularyTests
         Assert.Equal(ConformanceVerdict.Unknown, back.Verdict);
         Assert.Equal("abc123", back.Provenance!.CommitSha);
         Assert.Equal(new[] { "CM-6" }, back.ControlRefs);
+
+        // ZT overlay absent here → all four fields dropped (additive; a plain control verdict carries neither trio nor mandate).
+        Assert.False(payload.TryGetProperty("ztPillar", out _));
+        Assert.False(payload.TryGetProperty("mandateId", out _));
+        Assert.Null(back.ZtPillar);
+        Assert.Null(back.MandateId);
+    }
+
+    [Fact]
+    public void Conformance_Event_Carries_Zt_Overlay_Through_Ndjson()
+    {
+        // A maturity verdict sets the zt-trio; a separate verdict sets mandateId instead. Both round-trip camelCase.
+        var maturity = new BuildEvent
+        {
+            Type = BuildEventTypes.ConformanceEvaluated, BuildId = "b", RunId = "r", TraceId = "b",
+            SpanId = "0123456789abcdef", WorkerId = "agent:tamp", Seq = 0,
+            Payload = new ConformanceEvaluatedPayload
+            {
+                AdrRef = "0005", RuleId = "0005-r1", Verdict = ConformanceVerdict.Fail, Method = ConformanceMethod.Deterministic,
+                Blocks = true,
+                ZtPillar = "Data", ZtFunction = "Data Encryption", ZtStage = 3,
+            },
+        };
+
+        var json = BuildEventJson.Serialize(maturity);
+        using var doc = JsonDocument.Parse(json);
+        var payload = doc.RootElement.GetProperty("payload");
+        Assert.Equal("Data", payload.GetProperty("ztPillar").GetString());              // camelCase
+        Assert.Equal("Data Encryption", payload.GetProperty("ztFunction").GetString());
+        Assert.Equal(3, payload.GetProperty("ztStage").GetInt32());
+        Assert.False(payload.TryGetProperty("mandateId", out _));                       // trio set → mandate dropped
+
+        var back = (ConformanceEvaluatedPayload)BuildEventJson.Deserialize(json)!.Payload;
+        Assert.Equal("Data", back.ZtPillar);
+        Assert.Equal(3, back.ZtStage);
+
+        // A binary-mandate verdict: mandateId set, trio null.
+        var mandate = maturity with { Payload = new ConformanceEvaluatedPayload
+        {
+            AdrRef = "0018", RuleId = "0018-r2", Verdict = ConformanceVerdict.Unknown, Method = ConformanceMethod.Deterministic,
+            MandateId = "logging-maturity",
+        } };
+        var mjson = BuildEventJson.Serialize(mandate);
+        using var mdoc = JsonDocument.Parse(mjson);
+        var mpayload = mdoc.RootElement.GetProperty("payload");
+        Assert.Equal("logging-maturity", mpayload.GetProperty("mandateId").GetString());
+        Assert.False(mpayload.TryGetProperty("ztPillar", out _));                       // mandate set → trio dropped
     }
 }

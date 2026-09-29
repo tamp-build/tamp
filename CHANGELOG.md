@@ -8,7 +8,13 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
-## [1.17.0] — 2026-09-28 — Tamp.Components + Attestation evidence contract
+## [1.17.1] — 2026-09-28 — Zero-Trust overlay on the conformance evidence contract
+
+Additive extension to the [attestation evidence contract](docs/adr/0023-attestation-evidence-contract.md) shipped in 1.17.0 — a patch, not a milestone (per [ADR 0022](docs/adr/0022-versioning-policy.md); the 1.18 slot stays reserved for the NUKE→Tamp migration). Lets a `conformance.evaluated` verdict carry the Zero-Trust / mandate overlay of the rule that produced it, so downstream `tamp-findings` can score ZTMM maturity and reconcile binary mandates directly from the evidence without re-joining to the rule-set.
+
+### Added
+
+- **Zero-Trust overlay on `conformance.evaluated`.** `ConformanceEvaluatedPayload` gains four optional, nullable fields — `ztPillar` / `ztFunction` / `ztStage` (the CISA ZTMM maturity trio) and `mandateId` (a binary operational mandate, e.g. `mfa`) — emitted via `BuildEvents.Conformance(...)`. A maturity verdict sets the trio; a mandate verdict sets `mandateId` instead; a plain control verdict sets neither (existing behavior). Fully **additive** — schema stays `1.0`, null fields are dropped on the wire, and existing consumers are unaffected. The ADR-conformance satellite (`tamp-conformance`) carries the same vocabulary on its rules, so the rule overlay and the emitted-verdict overlay are one consistent set that round-trips through generation-push and ingest.
 
 **1.16 was skipped** — Components was complete but unreleased, so it bundles into 1.17 alongside the attestation evidence contract rather than forcing a redundant release push (per [ADR 0022](docs/adr/0022-versioning-policy.md); the migration tooling that had held 1.17 moves to 1.18).
 
