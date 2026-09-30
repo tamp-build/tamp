@@ -24,11 +24,26 @@ using Tamp.Sbom;
 //   REPO_ROOT           default cwd (conformance scans this tree)
 
 static string Env(string k, string d = "") => Environment.GetEnvironmentVariable(k) is { Length: > 0 } v ? v : d;
+// Resolve an executable to its absolute path via PATH (avoids relying on PATH resolution at spawn time).
+static string ResolveExe(string name)
+{
+    var exts = OperatingSystem.IsWindows() ? new[] { ".exe", ".cmd", "" } : new[] { "" };
+    foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+    {
+        if (string.IsNullOrEmpty(dir)) continue;
+        foreach (var ext in exts)
+        {
+            var full = Path.Combine(dir, name + ext);
+            if (File.Exists(full)) return full;
+        }
+    }
+    return name; // not found on PATH — let the OS surface the error
+}
 static string Git(string args, string cwd)
 {
     try
     {
-        var psi = new ProcessStartInfo("git", args) { WorkingDirectory = cwd, RedirectStandardOutput = true, UseShellExecute = false };
+        var psi = new ProcessStartInfo(ResolveExe("git"), args) { WorkingDirectory = cwd, RedirectStandardOutput = true, UseShellExecute = false };
         using var p = Process.Start(psi)!;
         var o = p.StandardOutput.ReadToEnd().Trim();
         p.WaitForExit();
