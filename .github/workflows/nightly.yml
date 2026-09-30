@@ -186,8 +186,16 @@ jobs:
       - name: Resolve version
         if: env.SKIP != '1'
         run: |
-          V=$(grep -oE '<Version>[^<]+' Directory.Build.props | head -1 | sed 's/<Version>//')
-          echo "TAMP_VERSION=${V:-0.0.0}" >> "$GITHUB_ENV"
+          # Per-build version: base + short commit sha. Each nightly runs against a different main
+          # HEAD but Directory.Build.props Version is stale between releases, so the base alone would
+          # make distinct commits share a version — and findings' BuildResolver version-fallback would
+          # then conflate them if a commit-sha match ever misses. Commit-sha is the real key; the
+          # +<sha> suffix keeps the version attribute unique per build too. (Releases keep the clean
+          # tag version — one commit per tag, no ambiguity.)
+          BASE=$(grep -oE '<Version>[^<]+' Directory.Build.props | head -1 | sed 's/<Version>//')
+          BASE=${BASE:-0.0.0}
+          SHORT=$(git rev-parse --short=7 HEAD)
+          echo "TAMP_VERSION=${BASE}+${SHORT}" >> "$GITHUB_ENV"
 
       - name: Ingest → findings
         if: env.SKIP != '1'
