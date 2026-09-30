@@ -72,7 +72,8 @@ http.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
 
 if (cmd == "gate") return await GateAsync();
 if (cmd == "ingest") return await IngestAsync();
-Console.Error.WriteLine($"unknown command '{cmd}' (expected: ingest | gate)");
+if (cmd == "generate") return await GenerateAsync();
+Console.Error.WriteLine($"unknown command '{cmd}' (expected: ingest | gate | generate)");
 return 2;
 
 async Task<int> GateAsync()
@@ -246,8 +247,77 @@ async Task<int> IngestAsync()
     }
     catch (Exception ex) { Console.Error.WriteLine($"RECEIPTS ✗ {Trunc(ex.Message)}"); errors++; }
 
+    // 8) Scan token usage — the deterministic conformance check spends NO model tokens, but we
+    // report it (empty usage set) so the Costs page shows "scanned, 0 tokens" not a blank. Real
+    // token cost lives in rule GENERATION (the `generate` command), reported there.
+    try
+    {
+        await PostScanUsageAsync(Array.Empty<object>());
+        Console.WriteLine("USAGE    → scan-usage reported (0 model tokens — conformance check is deterministic)");
+    }
+    catch (Exception ex) { Console.Error.WriteLine($"USAGE    ✗ {Trunc(ex.Message)}"); errors++; }
+
     Console.WriteLine(errors == 0 ? "\nIngest complete ✅" : $"\nIngest completed with {errors} error(s) ⚠");
     return errors == 0 ? 0 : 1;
+}
+
+// Regenerate ADR rules via the LLM (the real token spend) → push to findings → report token usage.
+// Run this when ADRs change (an ADR-edit workflow), not nightly.
+async Task<int> GenerateAsync()
+{
+    var apiKey = Env("ANTHROPIC_API_KEY");
+    if (apiKey.Length == 0) { Console.Error.WriteLine("FATAL: ANTHROPIC_API_KEY not set (required for rule generation)"); return 2; }
+    var genModel = Env("GEN_MODEL_ID", "claude-opus-4-8");
+    Console.WriteLine($"→ generate rules from ADRs via {genModel}  {client}/{project} commit={Short(commit)}\n");
+
+    var opts = new ConformanceOptions { RepoRoot = AbsolutePath.Create(repoRoot), CommitSha = commit };
+    using var chat = new UsageChat(apiKey, genModel, maxTokens: 8192);
+    var extractor = new LlmRuleExtractor(chat);
+    var adrs = RuleStore.AdrFiles(opts.ResolvedAdrDir);
+    var all = new List<AdrRuleWithRef>();
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    foreach (var (adrId, file) in adrs)
+    {
+        try
+        {
+            var set = RuleGeneration.Generate(adrId, file, extractor, extractedBy: chat.ModelId);
+            foreach (var r in set.Rules) all.Add(new AdrRuleWithRef { AdrRef = adrId, Rule = r });
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"  ADR {adrId}: extraction failed — {Trunc(ex.Message)}"); }
+    }
+    sw.Stop();
+    Console.WriteLine($"Extracted {all.Count} rules from {adrs.Count} ADRs — {chat.InputTokens:N0} in / {chat.OutputTokens:N0} out over {chat.Calls} calls ({sw.Elapsed.TotalSeconds:N0}s)");
+
+    using var store = new FindingsAdrRulesClient();
+    var pushed = store.PushGeneration(url, token, chat.ModelId, all);
+    Console.WriteLine($"PUSH     → upserted={pushed.Upserted} retired={pushed.Retired} active={pushed.Active}");
+
+    try
+    {
+        await PostScanUsageAsync(new[] { new
+        {
+            adapter = "adr-generation", modelId = genModel, provider = "anthropic", capability = "rule-extraction",
+            inputTokens = chat.InputTokens, outputTokens = chat.OutputTokens,
+            latencyMs = (long)sw.Elapsed.TotalMilliseconds, observedAt = DateTimeOffset.UtcNow,
+        }});
+        Console.WriteLine($"USAGE    → scan-usage reported ({chat.InputTokens:N0} in / {chat.OutputTokens:N0} out on {genModel})");
+    }
+    catch (Exception ex) { Console.Error.WriteLine($"USAGE    ✗ {Trunc(ex.Message)}"); return 1; }
+    return 0;
+}
+
+// POST /ingest/scan-usage — token usage for a build's scan run (replace-on-ingest). Empty `usage`
+// is meaningful: "scan ran, spent no model tokens" (the deterministic check). findings owns pricing.
+async Task PostScanUsageAsync(IEnumerable<object> usage)
+{
+    var req = new
+    {
+        client, project, version, commitSha = commit, branch,
+        buildId = (string?)null, pullRequestRef = (string?)null,
+        usage = usage.ToArray(),
+    };
+    var (code, resp) = await PostStringAsync("/ingest/scan-usage", JsonSerializer.Serialize(req), "application/json");
+    if (code is not (200 or 201)) throw new Exception($"scan-usage {code}: {Trunc(resp)}");
 }
 
 string BuildConformanceNdjson(ConformanceRunResult result, string sha)
@@ -347,3 +417,44 @@ static Severity MapSeverity(string? s) => (s ?? "").ToLowerInvariant() switch
 static string? FirstExisting(params string[] paths) => Array.Find(paths, File.Exists);
 static string Short(string sha) => sha.Length >= 7 ? sha[..7] : sha;
 static string Trunc(string s) { s = s.Replace('\n', ' ').Trim(); return s.Length > 200 ? s[..200] + "…" : s; }
+
+// An IChatCompletion (the Tamp.Conformance BYOK seam) over the Anthropic Messages API that
+// accumulates token usage — used by `generate` to report real rule-extraction cost.
+sealed class UsageChat : Tamp.Conformance.IChatCompletion, IDisposable
+{
+    private readonly System.Net.Http.HttpClient _http = new() { Timeout = TimeSpan.FromMinutes(3) };
+    private readonly string _key, _model;
+    private readonly int _maxTokens;
+    public long InputTokens, OutputTokens;
+    public int Calls;
+    public UsageChat(string key, string model, int maxTokens = 8192) { _key = key; _model = model; _maxTokens = maxTokens; }
+    public string ModelId => $"anthropic/{_model}";
+
+    public string Complete(string system, string user)
+    {
+        var body = JsonSerializer.Serialize(new { model = _model, max_tokens = _maxTokens, system, messages = new[] { new { role = "user", content = user } } });
+        using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
+        { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+        req.Headers.TryAddWithoutValidation("x-api-key", _key);
+        req.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+        req.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+        using var resp = _http.Send(req);
+        var payload = new StreamReader(resp.Content.ReadAsStream()).ReadToEnd();
+        if (!resp.IsSuccessStatusCode) throw new HttpRequestException($"Anthropic {(int)resp.StatusCode}: {payload}");
+        using var doc = JsonDocument.Parse(payload);
+        var root = doc.RootElement;
+        Calls++;
+        if (root.TryGetProperty("usage", out var u))
+        {
+            if (u.TryGetProperty("input_tokens", out var it)) InputTokens += it.GetInt64();
+            if (u.TryGetProperty("output_tokens", out var ot)) OutputTokens += ot.GetInt64();
+        }
+        var sb = new StringBuilder();
+        if (root.TryGetProperty("content", out var content))
+            foreach (var b in content.EnumerateArray())
+                if (b.TryGetProperty("type", out var t) && t.GetString() == "text" && b.TryGetProperty("text", out var tx))
+                    sb.Append(tx.GetString());
+        return sb.ToString();
+    }
+    public void Dispose() => _http.Dispose();
+}
