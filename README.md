@@ -2,6 +2,8 @@
 
 > Pack the build down tight.
 
+[![tamp-findings status](https://tamp-findings.brewingcoder.com/badge/ee63b033cff34f5f9e891ba10e86b6ae.svg)](https://tamp-findings.brewingcoder.com)
+
 A small-core, plugin-driven build automation framework for .NET 10 and beyond. Cross-platform. Honest about resources. Forkable — and **agent-first**: the build emits a canonical machine channel (a typed event stream + an MCP control surface), not just a human console, so a coding agent is a first-class parallel worker rather than something screen-scraping your CLI. → [**Agent-first**](docs/agent-first.md).
 
 ---
