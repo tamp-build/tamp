@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Tamp;
 using Tamp.Conformance;
 using Tamp.Ingest.V1;
@@ -130,11 +131,15 @@ async Task<int> IngestAsync()
     if (File.Exists(sbomPath))
         try
         {
-            var bom = SbomReader.LoadFromFile(AbsolutePath.Create(sbomPath));
+            // lic tool: resolve legacy licenseUrl / "Unknown - See URL" → SPDX before emitting, so
+            // license facts ride the SBOM (one bundle, no license-specific endpoint). Pure evidence
+            // enrichment — findings still owns license policy.
+            var (sbomToLoad, licResolved) = ResolveLicenses(sbomPath);
+            var bom = SbomReader.LoadFromFile(AbsolutePath.Create(sbomToLoad));
             sbomComponents = bom.Components?.Count ?? 0;
             var r = await ingest.PostSbomAsync(hier, bom, toolName: "CycloneDX", toolVersion: "6.2.0");
             sbomSnapshotId = r.SbomSnapshotId;
-            Console.WriteLine($"SBOM     → snapshot={r.SbomSnapshotId} components={sbomComponents}");
+            Console.WriteLine($"SBOM     → snapshot={r.SbomSnapshotId} components={sbomComponents} licenses-resolved={licResolved}");
         }
         catch (Exception ex) { Console.Error.WriteLine($"SBOM     ✗ {Trunc(ex.Message)}"); errors++; }
     else Console.Error.WriteLine($"SBOM     ⚠ missing {sbomPath}");
@@ -413,6 +418,88 @@ static Severity MapSeverity(string? s) => (s ?? "").ToLowerInvariant() switch
     "low" => Severity.Low,
     _ => Severity.Info, // negligible / unknown / null
 };
+
+// lic tool — resolve a CycloneDX SBOM's legacy `licenseUrl` / "Unknown - See URL" components to
+// SPDX ids in place, so license facts travel inside the SBOM evidence (no license-specific endpoint).
+// Two resolvers: self-describing license URLs (generic), then a curated purl→SPDX map for well-known
+// packages whose URL is a repo LICENSE blob / MS fwlink (not self-describing). Pure evidence — findings
+// still owns license policy. Returns the path to load (corrected copy if anything changed) + count.
+static (string Path, int Resolved) ResolveLicenses(string sbomPath)
+{
+    JsonNode? root;
+    try { root = JsonNode.Parse(File.ReadAllText(sbomPath)); }
+    catch { return (sbomPath, 0); }
+    var comps = root?["components"]?.AsArray();
+    if (comps is null) return (sbomPath, 0);
+    var n = 0;
+    foreach (var c in comps)
+    {
+        var purl = c?["purl"]?.GetValue<string>();
+        var lics = c?["licenses"]?.AsArray();
+        if (lics is null) continue;
+        foreach (var le in lics)
+        {
+            var lic = le?["license"]?.AsObject();
+            if (lic is null) continue; // SPDX `expression` form — nothing to resolve
+            var id = lic["id"]?.GetValue<string>();
+            if (!string.IsNullOrEmpty(id) && !id.Contains("unknown", StringComparison.OrdinalIgnoreCase)) continue;
+            var url = lic["url"]?.GetValue<string>();
+            var spdx = ResolveUrlToSpdx(url) ?? ResolvePurlToSpdx(purl);
+            if (spdx is null) continue;
+            lic.Remove("name");
+            lic.Remove("url");
+            lic["id"] = spdx;
+            n++;
+        }
+    }
+    if (n == 0) return (sbomPath, 0);
+    var outPath = sbomPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+        ? sbomPath[..^5] + ".resolved.json" : sbomPath + ".resolved.json";
+    File.WriteAllText(outPath, root!.ToJsonString());
+    return (outPath, n);
+}
+
+// Self-describing license URLs → SPDX id (generic; no hardcoded packages).
+static string? ResolveUrlToSpdx(string? url)
+{
+    if (string.IsNullOrEmpty(url)) return null;
+    var u = url.ToLowerInvariant();
+    string? Seg(string marker)
+    {
+        var i = u.IndexOf(marker, StringComparison.Ordinal);
+        if (i < 0) return null;
+        var seg = url[(i + marker.Length)..].TrimEnd('/').Split('/', '?', '#')[0].Replace(".html", "");
+        return string.IsNullOrEmpty(seg) ? null : seg;
+    }
+    if (u.Contains("licenses.nuget.org/")) return Seg("licenses.nuget.org/");
+    if (u.Contains("spdx.org/licenses/")) return Seg("spdx.org/licenses/");
+    if (u.Contains("opensource.org/licenses/")) return Seg("opensource.org/licenses/");
+    if (u.Contains("opensource.org/license/")) return Seg("opensource.org/license/");
+    if (u.Contains("apache.org/licenses/license-2.0")) return "Apache-2.0";
+    return null;
+}
+
+// Curated purl→SPDX for well-known packages whose licenseUrl is a repo LICENSE blob / MS fwlink
+// (not self-describing). Keyed by package name so it holds across versions. Seeded from tamp#98.
+static string? ResolvePurlToSpdx(string? purl)
+{
+    if (string.IsNullOrEmpty(purl)) return null;
+    var name = purl;
+    var at = name.IndexOf('@'); if (at >= 0) name = name[..at];
+    var slash = name.LastIndexOf('/'); if (slash >= 0) name = name[(slash + 1)..];
+    return name.ToLowerInvariant() switch
+    {
+        "bogus" => "MIT",
+        "microsoft.netcore.platforms" => "MIT",                 // MS relicensed .NET Core to MIT (legacy fwlink EULA in old nuspec)
+        "netstandard.library" => "MIT",
+        "system.buffers" => "MIT",
+        "system.memory" => "MIT",
+        "system.numerics.vectors" => "MIT",
+        "system.threading.tasks.extensions" => "MIT",
+        "xunit.abstractions" => "Apache-2.0",
+        _ => null,
+    };
+}
 
 static string? FirstExisting(params string[] paths) => Array.Find(paths, File.Exists);
 static string Short(string sha) => sha.Length >= 7 ? sha[..7] : sha;
