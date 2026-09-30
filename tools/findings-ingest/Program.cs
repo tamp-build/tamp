@@ -142,6 +142,13 @@ async Task<int> IngestAsync()
             var r = await ingest.PostSbomAsync(hier, bom, toolName: "CycloneDX", toolVersion: "6.2.0");
             sbomSnapshotId = r.SbomSnapshotId;
             Console.WriteLine($"SBOM     → snapshot={r.SbomSnapshotId} components={sbomComponents} licenses-resolved={licResolved}");
+
+            // Enrich components with registry version data (LatestVersion / LatestReleasedAt) so the
+            // SBOM-freshness category reads "Fresh" instead of "Not assessed". findings only enriches
+            // when we POST this after the ingest; snapshotId comes from the ingest response. Best-effort.
+            var (ec, er) = await PostStringAsync($"/sbom-components/enrich-versions?snapshotId={r.SbomSnapshotId}", "", "application/json");
+            if (ec is 200 or 201) Console.WriteLine($"SBOM-ENR → {Trunc(er)}");
+            else Console.Error.WriteLine($"SBOM-ENR ⚠ {ec} {Trunc(er)}");
         }
         catch (Exception ex) { Console.Error.WriteLine($"SBOM     ✗ {Trunc(ex.Message)}"); errors++; }
     else Console.Error.WriteLine($"SBOM     ⚠ missing {sbomPath}");
