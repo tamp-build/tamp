@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Tamp;
 using Tamp.Conformance;
+using Tamp.Conformance.Quality;
 using Tamp.Ingest.V1;
 using Tamp.Sarif;
 using Tamp.Sbom;
@@ -73,8 +74,9 @@ http.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
 
 if (cmd == "gate") return await GateAsync();
 if (cmd == "ingest") return await IngestAsync();
+if (cmd == "quality") return await QualityAsync();
 if (cmd == "generate") return await GenerateAsync();
-Console.Error.WriteLine($"unknown command '{cmd}' (expected: ingest | gate | generate)");
+Console.Error.WriteLine($"unknown command '{cmd}' (expected: ingest | quality | gate | generate)");
 return 2;
 
 async Task<int> GateAsync()
@@ -264,6 +266,105 @@ async Task<int> IngestAsync()
 
     Console.WriteLine(errors == 0 ? "\nIngest complete ✅" : $"\nIngest completed with {errors} error(s) ⚠");
     return errors == 0 ? 0 : 1;
+}
+
+// Quality + SAST lane (ADR 0006): emit BOTH sources — live SonarCloud fetch + local Roslyn/SonarAnalyzer
+// SARIF — as distinct scanner batches (findings owns cross-source dedupe via normalizedRuleId), plus the
+// SonarCloud quality-gate verdict and the analysis-coverage report. Runs inline so all quality evidence
+// shares the build's commit with the rest. Each source degrades gracefully: no SONAR_TOKEN → skip
+// SonarCloud (Roslyn-only, no gate); no SARIF dir → skip Roslyn.
+async Task<int> QualityAsync()
+{
+    Console.WriteLine($"→ {url}  QUALITY {client}/{project}/{component} version={version} commit={Short(commit)} branch={branch}\n");
+    var env = new QualityEnvelope(client, project, version, commit, branch, component, "solution", null);
+    var errors = 0;
+    var receipts = new List<object>();
+    var started = DateTimeOffset.UtcNow;
+    var coverageContribs = new List<CoverageContribution>();
+
+    // 1) SonarCloud (live) → findings batch + quality-gate verdict. Needs SONAR_TOKEN.
+    var sonarToken = Env("SONAR_TOKEN");
+    if (sonarToken.Length > 0)
+        try
+        {
+            var sonarUrl = Env("SONAR_URL", "https://sonarcloud.io");
+            var projectKey = Env("SONAR_PROJECT_KEY", Env("GITHUB_REPOSITORY").Replace('/', '_'));
+            var sonarBranch = Env("SONAR_BRANCH", branch);
+            using var sonarHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+            var snap = await new SonarCloudFetcher(sonarHttp, sonarToken, sonarUrl).FetchAsync(projectKey, sonarBranch);
+            var sonarFindings = new QualityAdapter(snap.ToSource()).Run().All;
+            var (fc, fr) = await PostStringAsync("/ingest/findings", QualityEmit.FindingsBody(env, "SonarQube", sonarFindings), "application/json");
+            if (fc is 200 or 201) Console.WriteLine($"QUAL-SQ  → {sonarFindings.Count} findings (projectKey={projectKey}) → {Trunc(fr)}");
+            else { Console.Error.WriteLine($"QUAL-SQ  ✗ {fc} {Trunc(fr)}"); errors++; }
+            receipts.Add(new { scanner = "SonarQube", status = "Succeeded", startedAt = started, completedAt = DateTimeOffset.UtcNow, findingsCount = sonarFindings.Count, toolName = "SonarCloud", toolVersion = "cloud", notes = $"server={sonarUrl}; projectKey={projectKey}; branch={sonarBranch}; findings={sonarFindings.Count}" });
+
+            var gate = snap.ToGateVerdict();
+            var (gc, gr) = await PostStringAsync("/ingest/quality-gate", QualityEmit.QualityGateBody(env, gate), "application/json");
+            if (gc is 200 or 201) Console.WriteLine($"QUAL-GATE→ status={gate.Status} → {Trunc(gr)}");
+            else { Console.Error.WriteLine($"QUAL-GATE✗ {gc} {Trunc(gr)}"); errors++; }
+
+            coverageContribs.Add(new CoverageContribution("sonarqube", sonarFindings.Select(f => f.FilePath).Distinct().ToArray()));
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"QUAL-SQ  ✗ {Trunc(ex.Message)}"); errors++; }
+    else Console.Error.WriteLine("QUAL-SQ  ⚠ SONAR_TOKEN not set — skipping SonarCloud quality lane");
+
+    // 2) Local Roslyn/SonarAnalyzer SARIF → findings batch (no gate; a local analyzer has none).
+    var roslynDir = Env("ROSLYN_SARIF_DIR", Path.Combine(repoRoot, "artifacts", "security", "roslyn"));
+    if (Directory.Exists(roslynDir))
+        try
+        {
+            var roslynFindings = new QualityAdapter(RoslynSarifSource.FromDirectory(roslynDir, repoRoot)).Run().All;
+            var (rc, rr) = await PostStringAsync("/ingest/findings", QualityEmit.FindingsBody(env, "Roslyn", roslynFindings), "application/json");
+            if (rc is 200 or 201) Console.WriteLine($"QUAL-ROS → {roslynFindings.Count} findings ({roslynDir}) → {Trunc(rr)}");
+            else { Console.Error.WriteLine($"QUAL-ROS ✗ {rc} {Trunc(rr)}"); errors++; }
+            receipts.Add(new { scanner = "Roslyn", status = "Succeeded", startedAt = started, completedAt = DateTimeOffset.UtcNow, findingsCount = roslynFindings.Count, toolName = "SonarAnalyzer.CSharp", toolVersion = "roslyn", notes = $"local in-CI Roslyn analysis; profile=SonarWay; findings={roslynFindings.Count}" });
+            coverageContribs.Add(new CoverageContribution("roslyn", EnumerateCsFiles(repoRoot)));
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"QUAL-ROS ✗ {Trunc(ex.Message)}"); errors++; }
+    else Console.Error.WriteLine($"QUAL-ROS ⚠ no SARIF dir {roslynDir} — skipping Roslyn quality lane");
+
+    // 3) Analysis-coverage — only the producer can compute it (full checkout).
+    try
+    {
+        var report = new AnalysisCoverageAccountant(repoRoot).Compute(coverageContribs);
+        var (cc, cr) = await PostStringAsync("/ingest/analysis-coverage", QualityEmit.AnalysisCoverageBody(env, report), "application/json");
+        var gaps = string.Join(",", report.Overall.LanguagesWithFootprintNoAnalyzer);
+        if (cc is 200 or 201) Console.WriteLine($"QUAL-COV → {report.Languages.Count} langs, overall {report.Overall.PercentAnalyzed}% (gaps: {(gaps.Length == 0 ? "none" : gaps)}) → {Trunc(cr)}");
+        else { Console.Error.WriteLine($"QUAL-COV ✗ {cc} {Trunc(cr)}"); errors++; }
+    }
+    catch (Exception ex) { Console.Error.WriteLine($"QUAL-COV ✗ {Trunc(ex.Message)}"); errors++; }
+
+    // 4) Quality scan-run receipts (SonarQube credits RanQuality+RanSast; Roslyn credits the same).
+    if (receipts.Count > 0)
+        try
+        {
+            var body = JsonSerializer.Serialize(new { client, project, component, componentKind = "solution", version, commitSha = commit, branch, receipts });
+            var (pc, pr) = await PostStringAsync("/ingest/scan-runs", body, "application/json");
+            if (pc is 200 or 201) Console.WriteLine($"QUAL-RCPT→ {receipts.Count} posted");
+            else { Console.Error.WriteLine($"QUAL-RCPT✗ {pc} {Trunc(pr)}"); errors++; }
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"QUAL-RCPT✗ {Trunc(ex.Message)}"); errors++; }
+
+    Console.WriteLine(errors == 0 ? "\nQuality lane complete ✅" : $"\nQuality lane completed with {errors} error(s) ⚠");
+    return errors == 0 ? 0 : 1;
+}
+
+// All compiled C# files (the Roslyn-analyzed set for coverage attribution), minus build/generated output.
+static string[] EnumerateCsFiles(string root)
+{
+    try
+    {
+        return Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
+            .Where(p =>
+            {
+                var u = p.Replace('\\', '/');
+                return !u.Contains("/bin/") && !u.Contains("/obj/") && !u.Contains("/artifacts/")
+                    && !u.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase)
+                    && !u.EndsWith(".Designer.cs", StringComparison.OrdinalIgnoreCase);
+            })
+            .ToArray();
+    }
+    catch { return Array.Empty<string>(); }
 }
 
 // Regenerate ADR rules via the LLM (the real token spend) → push to findings → report token usage.
