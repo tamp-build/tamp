@@ -95,18 +95,38 @@ jobs:
           export PATH="$PATH:$HOME/.dotnet/tools"
           dotnet CycloneDX Tamp.slnx -o "$EVIDENCE_DIR" -fn sbom.cdx.json -F Json
 
+      # Pinned version + HTTPS-only + SHA256 verify — never execute an unverified binary.
       - name: SAST (opengrep, best-effort)
         continue-on-error: true
+        env:
+          OPENGREP_VERSION: '1.30.0'
+          OPENGREP_SHA256: '35779bdd72e92129c8df2a77f0c55e8c08356801ea92591ef32108d6b28d564c'
         run: |
-          curl -fsSL https://raw.githubusercontent.com/opengrep/opengrep/main/install.sh | bash || { echo "opengrep install failed"; exit 0; }
-          "$HOME/.opengrep/cli/latest/opengrep" scan --config auto --sarif --output "$EVIDENCE_DIR/opengrep.sarif" . || echo "opengrep scan non-zero — continuing"
+          set -uo pipefail
+          if curl --proto '=https' --tlsv1.2 -fsSL -o opengrep "https://github.com/opengrep/opengrep/releases/download/v${OPENGREP_VERSION}/opengrep_manylinux_x86" \
+             && echo "${OPENGREP_SHA256}  opengrep" | sha256sum -c -; then
+            chmod +x opengrep
+            ./opengrep scan --config auto --sarif --output "$EVIDENCE_DIR/opengrep.sarif" . || echo "opengrep scan non-zero — continuing"
+          else
+            echo "opengrep download/verify failed — skipping SAST"
+          fi
 
       - name: Secrets (trufflehog — fails on VERIFIED secrets)
+        env:
+          TRUFFLEHOG_VERSION: '3.97.9'
         run: |
-          curl -fsSL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin || { echo "trufflehog install failed"; exit 0; }
-          trufflehog filesystem . --json --no-update > "$EVIDENCE_DIR/trufflehog.json" 2>/dev/null || true
-          if grep -q '"Verified":true' "$EVIDENCE_DIR/trufflehog.json" 2>/dev/null; then
-            echo "::error::trufflehog found VERIFIED secrets"; exit 1
+          set -uo pipefail
+          base="https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}"
+          if curl --proto '=https' --tlsv1.2 -fsSL -o th.tar.gz "${base}/trufflehog_${TRUFFLEHOG_VERSION}_linux_amd64.tar.gz" \
+             && curl --proto '=https' --tlsv1.2 -fsSL -o th_checksums.txt "${base}/trufflehog_${TRUFFLEHOG_VERSION}_checksums.txt" \
+             && grep 'linux_amd64.tar.gz' th_checksums.txt | sha256sum -c - \
+             && tar -xzf th.tar.gz trufflehog; then
+            ./trufflehog filesystem . --json --no-update > "$EVIDENCE_DIR/trufflehog.json" 2>/dev/null || true
+            if grep -q '"Verified":true' "$EVIDENCE_DIR/trufflehog.json" 2>/dev/null; then
+              echo "::error::trufflehog found VERIFIED secrets"; exit 1
+            fi
+          else
+            echo "trufflehog download/verify failed — skipping secrets scan"
           fi
 
       - name: Ingest evidence → findings
