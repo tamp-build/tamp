@@ -209,6 +209,26 @@ jobs:
           REPO_ROOT: ${{ github.workspace }}
         run: dotnet run --project tools/findings-ingest/FindingsIngest.csproj -c Release -- ingest
 
+      # Local Roslyn/SonarAnalyzer SARIF for the quality lane (best-effort — the quality step
+      # degrades to SonarCloud-only if this doesn't produce SARIFs).
+      - name: Roslyn SARIF (semantic SAST, for quality lane)
+        if: env.SKIP != '1'
+        continue-on-error: true
+        run: dotnet run --project build/Build.csproj -c Release -- SecurityScanRoslyn
+
+      # Quality + SAST lane (ADR 0006): both sources (live SonarCloud + local Roslyn) + quality-gate
+      # verdict + analysis-coverage, emitted inline so they share this build's commit. Best-effort.
+      - name: Quality → findings
+        if: env.SKIP != '1'
+        continue-on-error: true
+        env:
+          TAMP_COMMIT: ${{ github.sha }}
+          TAMP_BRANCH: ${{ github.ref_name }}
+          REPO_ROOT: ${{ github.workspace }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: tamp-build_tamp
+        run: dotnet run --project tools/findings-ingest/FindingsIngest.csproj -c Release -- quality
+
       - name: Ship-gate report (non-failing)
         if: env.SKIP != '1'
         continue-on-error: true
