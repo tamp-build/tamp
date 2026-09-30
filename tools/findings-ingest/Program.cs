@@ -123,13 +123,17 @@ async Task<int> IngestAsync()
     var errors = 0;
 
     // 1) SBOM
+    Guid? sbomSnapshotId = null;
+    var sbomComponents = 0;
     var sbomPath = Path.Combine(evidence, "sbom.cdx.json");
     if (File.Exists(sbomPath))
         try
         {
             var bom = SbomReader.LoadFromFile(AbsolutePath.Create(sbomPath));
+            sbomComponents = bom.Components?.Count ?? 0;
             var r = await ingest.PostSbomAsync(hier, bom, toolName: "CycloneDX", toolVersion: "6.2.0");
-            Console.WriteLine($"SBOM     → snapshot={r.SbomSnapshotId} components={bom.Components?.Count}");
+            sbomSnapshotId = r.SbomSnapshotId;
+            Console.WriteLine($"SBOM     → snapshot={r.SbomSnapshotId} components={sbomComponents}");
         }
         catch (Exception ex) { Console.Error.WriteLine($"SBOM     ✗ {Trunc(ex.Message)}"); errors++; }
     else Console.Error.WriteLine($"SBOM     ⚠ missing {sbomPath}");
@@ -190,6 +194,30 @@ async Task<int> IngestAsync()
         if (bad > 0) errors++;
     }
     else Console.Error.WriteLine($"TESTS    ⚠ no trx under {trxDir}");
+
+    // 5b) SCA vulnerabilities (grype against the SBOM) → /sbom-vulnerabilities/upsert + a Grype
+    // scan-run receipt whose Notes carry the advisory-DB provenance. This is what makes "0 CVEs"
+    // mean "scanned clean against grype-db <build>" instead of "no scan ran".
+    var grypePath = Path.Combine(evidence, "grype.json");
+    if (sbomSnapshotId is { } snap && File.Exists(grypePath))
+        try
+        {
+            var (vulns, dbNotes, toolVer) = ParseGrype(grypePath, sbomComponents);
+            var resp = await ingest.PostSbomVulnerabilitiesUpsertAsync(new SbomVulnerabilitiesUpsertRequest
+            {
+                SnapshotId = snap, Vulnerabilities = vulns,
+            });
+            Console.WriteLine($"SCA      → {vulns.Count} CVEs (matched={resp.Matched} inserted={resp.Inserted}) — {dbNotes}");
+            receipts.Add(new ScanRunReceipt
+            {
+                Scanner = ScannerKind.Grype, Status = ScanRunStatus.Succeeded,
+                StartedAt = started, CompletedAt = DateTimeOffset.UtcNow,
+                FindingsCount = vulns.Count, ToolName = "grype", ToolVersion = toolVer, Notes = dbNotes,
+            });
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"SCA      ✗ {Trunc(ex.Message)}"); errors++; }
+    else if (sbomSnapshotId is null) Console.Error.WriteLine("SCA      ⚠ no SBOM snapshot id — skipping vuln upsert");
+    else Console.Error.WriteLine($"SCA      ⚠ missing {grypePath} — no SCA scan to ingest");
 
     // 6) Conformance — fetch authoritative ruleset from findings, evaluate HEAD (deterministic), forward
     try
@@ -266,6 +294,55 @@ async Task<(int, string)> PostStringAsync(string path, string bodyStr, string co
     var resp = await http.PostAsync($"{url}{path}", content);
     return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync());
 }
+
+// Parse a grype JSON report → (vulnerabilities, DB-provenance notes, grype version).
+static (List<SbomVulnerability> Vulns, string Notes, string ToolVersion) ParseGrype(string path, int components)
+{
+    using var doc = JsonDocument.Parse(File.ReadAllText(path));
+    var root = doc.RootElement;
+    var vulns = new List<SbomVulnerability>();
+    if (root.TryGetProperty("matches", out var matches) && matches.ValueKind == JsonValueKind.Array)
+        foreach (var m in matches.EnumerateArray())
+        {
+            if (!m.TryGetProperty("vulnerability", out var v) || !m.TryGetProperty("artifact", out var a)) continue;
+            vulns.Add(new SbomVulnerability
+            {
+                PackageName = Str(a, "name") ?? "",
+                PackageVersion = Str(a, "version") ?? "",
+                AdvisoryId = Str(v, "id") ?? "",
+                Severity = MapSeverity(Str(v, "severity")),
+                Description = Str(v, "description"),
+                ReferenceUrl = Str(v, "dataSource"),
+            });
+        }
+    // DB provenance from descriptor.db(.status)
+    string built = "?", schema = "?", tool = "?";
+    if (root.TryGetProperty("descriptor", out var desc))
+    {
+        tool = Str(desc, "version") ?? "?";
+        if (desc.TryGetProperty("db", out var db))
+        {
+            var status = db.TryGetProperty("status", out var st) ? st : db;
+            built = Str(status, "built") ?? "?";
+            if (status.TryGetProperty("schemaVersion", out var sv))
+                schema = sv.ValueKind == JsonValueKind.Number ? sv.GetInt32().ToString() : (sv.GetString() ?? "?");
+        }
+    }
+    var schemaLabel = schema.StartsWith("v", StringComparison.OrdinalIgnoreCase) ? schema : $"v{schema}";
+    var notes = $"components={components}; db=grype-db/{schemaLabel}; db_built={built}; matched={vulns.Count}; cves={vulns.Count}";
+    return (vulns, notes, tool);
+
+    static string? Str(JsonElement e, string prop) => e.TryGetProperty(prop, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+}
+
+static Severity MapSeverity(string? s) => (s ?? "").ToLowerInvariant() switch
+{
+    "critical" => Severity.Critical,
+    "high" => Severity.High,
+    "medium" => Severity.Medium,
+    "low" => Severity.Low,
+    _ => Severity.Info, // negligible / unknown / null
+};
 
 static string? FirstExisting(params string[] paths) => Array.Find(paths, File.Exists);
 static string Short(string sha) => sha.Length >= 7 ? sha[..7] : sha;
