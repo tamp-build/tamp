@@ -31,7 +31,7 @@ What's different: Tamp's *architecture* is the resilience strategy. One small co
 
 ## Status
 
-**`Tamp.Core` 1.15.0** is the current public API; the `Tamp.*` NuGet prefix is reserved to the project ([nuget.org/profiles/tamp](https://www.nuget.org/profiles/tamp)). **70+ first-party packages** are live and pin against core via standard `PackageReference`. The dogfood Release pipeline (3-OS × multi-TFM matrix, refuses to publish if the commit's CI hasn't passed) ships every satellite end-to-end through Tamp itself.
+**`Tamp.Core` 1.17.3** is the current public API; the `Tamp.*` NuGet prefix is reserved to the project ([nuget.org/profiles/tamp](https://www.nuget.org/profiles/tamp)). **70+ first-party packages** are live and pin against core via standard `PackageReference`. The dogfood Release pipeline (3-OS × multi-TFM matrix, refuses to publish if the commit's CI hasn't passed) ships every satellite end-to-end through Tamp itself.
 
 Tamp is actively maintained and in daily production use — it drives dev / test / prod pipelines for several private client projects. Public releases track that work: the security chain (1.11.0) came straight out of an adopter's compliance requirement. **The [agent-first toolchain](docs/agent-first.md) ([ADR 0019](docs/adr/0019-agent-first-toolchain.md)) shipped in 1.15.0** — the canonical event stream, `tamp mcp` control surface, typed results + remedies, capability enforcement, agent economics, and end-to-end attribution are all live. **Current focus: reporting and attestation** — see [`tamp-findings`](#downstream-consumers--dashboards--observability) below.
 
@@ -186,6 +186,7 @@ The wiki's **[Module Catalog](https://github.com/tamp-build/tamp/wiki/Module-Cat
 - **Attestation + provenance** — `Tamp.GitHubAttest` (`gh attestation` + cosign keyless artifact signing / verification)
 - **Observability + notifications** — `Tamp.Telemetry` (OTel emit-side bridge), `Tamp.Telegram` (`IBuildReporter` → Telegram Bot API; Slack + Discord siblings planned), `Tamp.Ingest.V1` (typed client for the `tamp-ingest-v1` egress contract)
 - **Source control + tracking** — `Tamp.GitHubCli.V2`, `Tamp.YouTrack`
+- **Reusable build components** — `Tamp.Components` ([ADR 0020](docs/adr/0020-tamp-components.md)): tool-agnostic target-shape interfaces (`IRestore` / `ICompile` / `ITest` / `IPack`) plus the `IHaz*` injection contracts (`IHazSolution` / `IHazConfiguration` / `IHazArtifacts`); concrete tool bodies ship as `Tamp.Components.NetCli.V8/9/10`. Compose a standard build with `class Build : TampBuild, ICompile, ITest, IPack`. (Tamp's answer to `Nuke.Components`.)
 - **Foundation** — `Tamp.Http`, `Tamp.Sarif`, `Tamp.Sbom`, `Tamp.Templates.AspNet`
 - **Editor integration** — **[Tamp for VS Code](https://github.com/tamp-build/tamp-vscode)** (`.vsix` sideload from the repo's GitHub Releases; activity-bar targets tree, Run / Dry Run / View Plan, CodeLens, hover docs, run history)
 
@@ -231,7 +232,7 @@ Today: `net8.0;net9.0;net10.0`. Full rationale incl. the federal / regulated VDI
 
 **v1.x — Ecosystem fill.** Shipped. ADR backfill (0001–0018), per-satellite wiki pages, [migration guides from NUKE and Cake](https://github.com/tamp-build/tamp/wiki/Migrating-From-NUKE), the security chain, the VS Code extension, `tamp-beacon` + `tamp-findings`. Additional wrappers continue to land as adopters ask.
 
-**v2 — Adoption (current).** The **[agent-first toolchain](docs/agent-first.md) shipped** ([ADR 0019](docs/adr/0019-agent-first-toolchain.md)): one canonical `BuildEvent` stream with the agent NDJSON channel, the `tamp mcp` MCP control surface (targets as callable tools), typed target results + remedies, capability-tier enforcement, agent economics (compact summaries + addressable logs), worker-identity attribution through to `tamp-findings`, and the satellite parallel-safety sweep. Reporting + attestation remains an active workstream (`tamp-findings`, `Tamp.GitHubAttest`, SLSA / in-toto / DSSE provenance, CISA SSDF evidence). Still queued: schema-driven wrapper generation with AI-assisted bootstrapping from `--help` output ([ADR 0013](docs/adr/0013-schema-driven-wrappers.md)); JetBrains Fleet extension (`tamp-fleet`), sibling to the VS Code one; `Tamp.Components`; community module template.
+**v2 — Adoption (current).** The **[agent-first toolchain](docs/agent-first.md) shipped** ([ADR 0019](docs/adr/0019-agent-first-toolchain.md)): one canonical `BuildEvent` stream with the agent NDJSON channel, the `tamp mcp` MCP control surface (targets as callable tools), typed target results + remedies, capability-tier enforcement, agent economics (compact summaries + addressable logs), worker-identity attribution through to `tamp-findings`, and the satellite parallel-safety sweep. Reporting + attestation remains an active workstream (`tamp-findings`, `Tamp.GitHubAttest`, SLSA / in-toto / DSSE provenance, CISA SSDF evidence). **`Tamp.Components` shipped** ([ADR 0020](docs/adr/0020-tamp-components.md)) — reusable target-shape interfaces + `IHaz*` injection contracts, Tamp's answer to `Nuke.Components`. Still queued: schema-driven wrapper generation with AI-assisted bootstrapping from `--help` output ([ADR 0013](docs/adr/0013-schema-driven-wrappers.md)); JetBrains Fleet extension (`tamp-fleet`), sibling to the VS Code one; community module template.
 
 **Explicitly out of scope:** distributed builds (Bazel-style remote execution is a different project). Build script DSLs (Tamp builds are .NET console projects, period). CI YAML generation — most teams treat CI config as the source of truth for *when* things run and the build script as the source of truth for *what* runs; Tamp owns the latter and stays out of the former.
 
@@ -241,7 +242,6 @@ Today: `net8.0;net9.0;net10.0`. Full rationale incl. the federal / regulated VDI
 
 Honest limits, so you find them here rather than halfway through a port:
 
-- **No `Tamp.Components`.** NUKE has `Nuke.Components` (`IRestore`, `ICompile`, `ITest`, `IPack`, `IHazSolution` — interface mixins that hand you pre-composed *targets*). Tamp has **no equivalent**. It's named as a candidate in [ADR 0001](docs/adr/0001-small-core-plugin-architecture.md) and it's on the v2 list, but it is not designed, not built, and not scheduled. If your NUKE build leans on components, you'll write those targets out by hand for now. This is the largest single gap for a NUKE migration — and the item **most worth an outside contributor's ADR** (see [Governance](#governance)).
 - **No automated NUKE → Tamp converter.** The [migration guide](https://github.com/tamp-build/tamp/wiki/Migrating-From-NUKE) is thorough, but conversion is manual. A tool has never been scoped.
 - **Wrapper codegen isn't built.** Wrappers are hand-authored, which is why `NetCli.V8/V9/V10` carry real duplication. Deferred in [ADR 0013](docs/adr/0013-schema-driven-wrappers.md); tractable by hand at current scale.
 - **Logging is in-house, not Serilog.** `Tamp.Core` ships a minimal `Logger` with no external dependencies, routed through a `RedactingTextWriter` so registered secrets are scrubbed. A `Tamp.Logging.Serilog` adapter would be a welcome satellite; nobody has written one.
@@ -260,7 +260,7 @@ How to engage, by size of change:
 - **Typo** → open a PR.
 - **Bug fix / new wrapper verb** → [open an issue](https://github.com/tamp-build/tamp/issues) first, then a PR. See [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Wrap a new tool** → just publish it as `Tamp.{Tool}`. No permission needed. Then send a PR adding it to [`docs/community-modules.md`](docs/community-modules.md).
-- **Change a load-bearing design decision** (e.g. *design `Tamp.Components`*) → open a PR adding an ADR with `Status: Proposed`. Anyone may propose one (ADR 0009 §3.1); lazy consensus carries it after 7 days without objection.
+- **Change a load-bearing design decision** (e.g. *design an automated NUKE → Tamp converter*) → open a PR adding an ADR with `Status: Proposed`. Anyone may propose one (ADR 0009 §3.1); lazy consensus carries it after 7 days without objection.
 
 Decision-making is currently BDFL with a single maintainer ([MAINTAINERS.md](MAINTAINERS.md)); ADR 0009 §2.5 retires that rule automatically once the team reaches four maintainers. Two process ADRs bound the review loop in both directions: [0016](docs/adr/0016-decision-silence-forfeits.md) (maintainer silence forfeits the right to weigh in) and [0017](docs/adr/0017-pr-staleness-autoclose.md) (contributor silence on review feedback auto-closes the PR — reopenable freely).
 
