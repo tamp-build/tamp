@@ -98,6 +98,24 @@ jobs:
           export PATH="$PATH:$HOME/.dotnet/tools"
           dotnet CycloneDX Tamp.slnx -o "$EVIDENCE_DIR" -fn sbom.cdx.json -F Json
 
+      # SCA: scan the SBOM for CVEs. The ingest tool posts the results + a Grype scan-run
+      # receipt (DB provenance in Notes) so "0 CVEs" means "scanned clean" not "never scanned".
+      - name: SCA (grype against SBOM, best-effort)
+        continue-on-error: true
+        env:
+          GRYPE_VERSION: '0.119.0'
+        run: |
+          set -uo pipefail
+          base="https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}"
+          if curl --proto '=https' --tlsv1.2 -fsSL -o grype.tar.gz "${base}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz" \
+             && curl --proto '=https' --tlsv1.2 -fsSL -o grype_checksums.txt "${base}/grype_${GRYPE_VERSION}_checksums.txt" \
+             && grep 'linux_amd64.tar.gz' grype_checksums.txt | sha256sum -c - \
+             && tar -xzf grype.tar.gz grype; then
+            ./grype "sbom:$EVIDENCE_DIR/sbom.cdx.json" -o json --file "$EVIDENCE_DIR/grype.json" || echo "grype scan non-zero — continuing"
+          else
+            echo "grype download/verify failed — skipping SCA"
+          fi
+
       # Pinned version + HTTPS-only + SHA256 verify — never execute an unverified binary.
       - name: SAST (opengrep, best-effort)
         continue-on-error: true
