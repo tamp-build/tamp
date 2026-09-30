@@ -1,0 +1,56 @@
+name: ADR Rules Regenerate
+
+# When an ADR changes, re-extract the conformance rules from the ADRs via the LLM and push
+# them to tamp-findings (the authoritative rule store), then report the generation token usage.
+# This is the ONE conformance operation that actually spends model tokens — deterministic
+# checking (the nightly) is free; generation is not, so its cost is reported to findings' Costs page.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/adr/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: adr-rules-regen
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: '1'
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  FINDINGS_URL: https://tamp-findings.brewingcoder.com
+
+jobs:
+  regenerate:
+    name: regenerate ADR rules → findings
+    if: github.repository == 'tamp-build/tamp'
+    runs-on: ubuntu-latest
+    env:
+      FINDINGS_TOKEN: ${{ secrets.FINDINGS_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GEN_MODEL_ID: claude-opus-4-8   # generation quality matters; the rules are the authoritative store
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 1 }
+
+      - name: Guard — require secrets
+        run: |
+          if [ -z "$FINDINGS_TOKEN" ] || [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::FINDINGS_TOKEN + ANTHROPIC_API_KEY are required to regenerate + push ADR rules."
+            exit 1
+          fi
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Regenerate rules + push + report usage
+        env:
+          TAMP_COMMIT: ${{ github.sha }}
+          TAMP_BRANCH: ${{ github.ref_name }}
+          REPO_ROOT: ${{ github.workspace }}
+        run: dotnet run --project tools/findings-ingest/FindingsIngest.csproj -c Release -- generate
