@@ -90,6 +90,20 @@ jobs:
             echo "::warning::FINDINGS_TOKEN secret not set — skipping ingest."; echo "SKIP=1" >> "$GITHUB_ENV"
           fi
 
+      # Treat a *sustained* findings outage (Cloudflare 530/1033 tunnel down, origin 5xx, DNS/connect
+      # failure) as a SKIP, not a failure — the build+tests+coverage already passed and the evidence is
+      # fine; only the sink is down. A reachable origin (2xx/3xx, or even 401/403 — it answered) proceeds,
+      # and the ingest tool itself retries brief flaps with backoff. This is what keeps an infra blip from
+      # painting the whole nightly red (the 2026-10-01 incident).
+      - name: Guard — findings endpoint reachable
+        if: env.SKIP != '1'
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 --retry 2 --retry-delay 3 "$FINDINGS_URL/" || echo 000)
+          case "$code" in
+            2??|3??|401|403) echo "findings reachable (HTTP $code) — proceeding with ingest";;
+            *) echo "::warning::findings endpoint $FINDINGS_URL unreachable (HTTP $code) — skipping ingest lane (infra, not a build failure)."; echo "SKIP=1" >> "$GITHUB_ENV";;
+          esac
+
       - name: Restore
         if: env.SKIP != '1'
         run: dotnet restore Tamp.slnx
@@ -160,7 +174,7 @@ jobs:
           OPENGREP_SHA256: '35779bdd72e92129c8df2a77f0c55e8c08356801ea92591ef32108d6b28d564c'
         run: |
           set -uo pipefail
-          if curl --proto '=https' --tlsv1.2 -fsSL -o opengrep "https://github.com/opengrep/opengrep/releases/download/v${OPENGREP_VERSION}/opengrep_manylinux_x86" \
+          if curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --retry-delay 2 -o opengrep "https://github.com/opengrep/opengrep/releases/download/v${OPENGREP_VERSION}/opengrep_manylinux_x86" \
              && echo "${OPENGREP_SHA256}  opengrep" | sha256sum -c -; then
             chmod +x opengrep
             ./opengrep scan --config auto --sarif --output "$EVIDENCE_DIR/opengrep.sarif" . || echo "opengrep scan non-zero — continuing"
@@ -175,10 +189,14 @@ jobs:
         run: |
           set -uo pipefail
           base="https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}"
-          if curl --proto '=https' --tlsv1.2 -fsSL -o th.tar.gz "${base}/trufflehog_${TRUFFLEHOG_VERSION}_linux_amd64.tar.gz" \
-             && curl --proto '=https' --tlsv1.2 -fsSL -o th_checksums.txt "${base}/trufflehog_${TRUFFLEHOG_VERSION}_checksums.txt" \
-             && grep 'linux_amd64.tar.gz' th_checksums.txt | sha256sum -c - \
-             && tar -xzf th.tar.gz trufflehog; then
+          tarball="trufflehog_${TRUFFLEHOG_VERSION}_linux_amd64.tar.gz"
+          # Download to the asset's real filename so `sha256sum -c` (which reads the name from the checksums
+          # file) can find it — saving as th.tar.gz made verify fail every run ("FAILED open or read") and
+          # silently skip the secrets scan. Anchor the grep to the exact filename. (Mirrors the grype fix, #101.)
+          if curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --retry-delay 2 -o "$tarball" "${base}/${tarball}" \
+             && curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --retry-delay 2 -o th_checksums.txt "${base}/trufflehog_${TRUFFLEHOG_VERSION}_checksums.txt" \
+             && grep " ${tarball}\$" th_checksums.txt | sha256sum -c - \
+             && tar -xzf "$tarball" trufflehog; then
             ./trufflehog filesystem . --json --no-update > "$EVIDENCE_DIR/trufflehog.json" 2>/dev/null || true
             if grep -q '"Verified":true' "$EVIDENCE_DIR/trufflehog.json" 2>/dev/null; then
               echo "::error::trufflehog found VERIFIED secrets"; exit 1

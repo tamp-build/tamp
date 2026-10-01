@@ -55,6 +55,8 @@ static string Git(string args, string cwd)
     catch { return ""; }
 }
 
+const int RetryMaxAttempts = 4; // transient-retry budget: 1 try + 3 retries; backoff 2s, 4s, 8s
+
 var cmd = args.Length > 0 ? args[0] : "ingest";
 var url = Env("FINDINGS_URL", "https://tamp-findings.brewingcoder.com").TrimEnd('/');
 var token = Env("FINDINGS_TOKEN");
@@ -83,9 +85,12 @@ return 2;
 async Task<int> GateAsync()
 {
     var q = $"{url}/projects/{projectId}/gate?commitSha={Uri.EscapeDataString(commit)}";
-    var resp = await http.GetAsync(q);
-    var body = await resp.Content.ReadAsStringAsync();
-    if (!resp.IsSuccessStatusCode) { Console.Error.WriteLine($"gate query {(int)resp.StatusCode}: {Trunc(body)}"); return 2; }
+    var (code, body) = await SendWithRetryAsync(async () =>
+    {
+        var r = await http.GetAsync(q);
+        return ((int)r.StatusCode, await r.Content.ReadAsStringAsync());
+    }, "GET gate");
+    if (code is not (200 or 201)) { Console.Error.WriteLine($"gate query {code}: {Trunc(body)}"); return 2; }
     using var doc = JsonDocument.Parse(body);
     var root = doc.RootElement;
     int Blk(string n) => root.TryGetProperty(n, out var e) && e.TryGetInt32(out var i) ? i : -1;
@@ -167,7 +172,7 @@ async Task<int> IngestAsync()
         try
         {
             var sarif = SarifReader.LoadFromFile(AbsolutePath.Create(sastPath));
-            var r = await ingest.PostFindingsAsync(hier, ScannerKind.OpenGrep, sarif);
+            var r = await RetryOnExAsync(() => ingest.PostFindingsAsync(hier, ScannerKind.OpenGrep, sarif), "SAST");
             Console.WriteLine($"SAST     → cv={r.ComponentVersionId} inserted={r.FindingsInserted} (opengrep)");
             receipts.Add(Receipt(ScannerKind.OpenGrep, "opengrep", "1.x", r.FindingsInserted));
         }
@@ -177,12 +182,12 @@ async Task<int> IngestAsync()
     // 3) Secrets (trufflehog — record the scan ran; verified secrets fail the workflow step upstream)
     try
     {
-        var r = await ingest.PostFindingsAsync(new FindingsIngestRequest
+        var r = await RetryOnExAsync(() => ingest.PostFindingsAsync(new FindingsIngestRequest
         {
             Client = client, Project = project, Component = component, ComponentKind = "solution",
             Version = version, CommitSha = commit, Branch = branch,
             Scanner = ScannerKind.TruffleHog, Findings = Array.Empty<IngestFinding>(),
-        });
+        }), "SECRETS");
         Console.WriteLine($"SECRETS  → cv={r.ComponentVersionId} inserted={r.FindingsInserted} closed={r.FindingsClosed} (trufflehog)");
         receipts.Add(Receipt(ScannerKind.TruffleHog, "trufflehog", "3.x", 0));
     }
@@ -226,10 +231,10 @@ async Task<int> IngestAsync()
         try
         {
             var (vulns, dbNotes, toolVer) = ParseGrype(grypePath, sbomComponents);
-            var resp = await ingest.PostSbomVulnerabilitiesUpsertAsync(new SbomVulnerabilitiesUpsertRequest
+            var resp = await RetryOnExAsync(() => ingest.PostSbomVulnerabilitiesUpsertAsync(new SbomVulnerabilitiesUpsertRequest
             {
                 SnapshotId = snap, Vulnerabilities = vulns,
-            });
+            }), "SCA");
             Console.WriteLine($"SCA      → {vulns.Count} CVEs (matched={resp.Matched} inserted={resp.Inserted}) — {dbNotes}");
             receipts.Add(new ScanRunReceipt
             {
@@ -260,11 +265,11 @@ async Task<int> IngestAsync()
     // 7) Scan-run receipts
     try
     {
-        await ingest.PostScanRunsAsync(new ScanRunsIngestRequest
+        await RetryVoidAsync(() => ingest.PostScanRunsAsync(new ScanRunsIngestRequest
         {
             Client = client, Project = project, Component = component, ComponentKind = "solution",
             Version = version, CommitSha = commit, Branch = branch, Receipts = receipts,
-        });
+        }), "RECEIPTS");
         Console.WriteLine($"RECEIPTS → {receipts.Count} posted");
     }
     catch (Exception ex) { Console.Error.WriteLine($"RECEIPTS ✗ {Trunc(ex.Message)}"); errors++; }
@@ -473,18 +478,22 @@ string BuildConformanceNdjson(ConformanceRunResult result, string sha)
 async Task<(int, string)> PostFileRawAsync(string path, string file, string contentType, string extra = "")
 {
     var q = $"{url}{path}?client={Uri.EscapeDataString(client)}&project={Uri.EscapeDataString(project)}&version={Uri.EscapeDataString(version)}&commitSha={Uri.EscapeDataString(commit)}&branch={Uri.EscapeDataString(branch)}{extra}";
-    using var content = new ByteArrayContent(await File.ReadAllBytesAsync(file));
-    content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
-    var resp = await http.PostAsync(q, content);
-    return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync());
+    return await SendWithRetryAsync(async () =>
+    {
+        using var content = new ByteArrayContent(await File.ReadAllBytesAsync(file));
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
+        var resp = await http.PostAsync(q, content);
+        return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync());
+    }, $"POST {path}");
 }
 
 async Task<(int, string)> PostStringAsync(string path, string bodyStr, string contentType)
-{
-    using var content = new StringContent(bodyStr, Encoding.UTF8, contentType);
-    var resp = await http.PostAsync($"{url}{path}", content);
-    return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync());
-}
+    => await SendWithRetryAsync(async () =>
+    {
+        using var content = new StringContent(bodyStr, Encoding.UTF8, contentType);
+        var resp = await http.PostAsync($"{url}{path}", content);
+        return ((int)resp.StatusCode, await resp.Content.ReadAsStringAsync());
+    }, $"POST {path}");
 
 // Parse a grype JSON report → (vulnerabilities, DB-provenance notes, grype version).
 static (List<SbomVulnerability> Vulns, string Notes, string ToolVersion) ParseGrype(string path, int components)
@@ -713,6 +722,72 @@ static string? ResolvePurlToSpdx(string? purl)
 static string? FirstExisting(params string[] paths) => Array.Find(paths, File.Exists);
 static string Short(string sha) => sha.Length >= 7 ? sha[..7] : sha;
 static string Trunc(string s) { s = s.Replace('\n', ' ').Trim(); return s.Length > 200 ? s[..200] + "…" : s; }
+
+// --- Transient-failure resilience ---------------------------------------------------------------
+// A momentary findings outage (Cloudflare 530/1033 tunnel flap, a 502/503/504, a connection reset or
+// timeout) used to fail the whole nightly even though build+tests+coverage were green. These helpers
+// retry such transient faults with exponential backoff so a brief blip self-heals mid-run. A *sustained*
+// outage is handled upstream by the workflow's findings health precheck (skip, don't fail); a reachable
+// endpoint returning a non-transient status (4xx, 200) is returned immediately — real problems stay loud.
+// (RetryMaxAttempts is declared in the top-level region above so the local helpers can capture it.)
+
+static bool IsTransientStatus(int code) =>
+    code is 0 or 408 or 425 or 429 or 500 or 502 or 503 or 504
+         or 520 or 521 or 522 or 523 or 524 or 525 or 526 or 527 or 530; // 52x = Cloudflare origin/tunnel
+
+static bool IsTransientException(Exception ex)
+{
+    if (ex is HttpRequestException or TaskCanceledException or IOException) return true;
+    var m = ex.Message;
+    // TampIngestClient surfaces the HTTP status in the message — treat transient codes as retryable.
+    return m.Contains("530") || m.Contains("502") || m.Contains("503") || m.Contains("504")
+        || m.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+        || m.Contains("connection", StringComparison.OrdinalIgnoreCase);
+}
+
+// Retry a raw (statusCode, body) POST/GET when the status is transient or the send throws transiently.
+static async Task<(int, string)> SendWithRetryAsync(Func<Task<(int, string)>> send, string label)
+{
+    (int, string) last = (0, "");
+    for (var attempt = 1; attempt <= RetryMaxAttempts; attempt++)
+    {
+        try
+        {
+            last = await send();
+            if (!IsTransientStatus(last.Item1)) return last; // success or a real (non-transient) error
+        }
+        catch (Exception ex) when (IsTransientException(ex))
+        {
+            last = (0, ex.Message);
+        }
+        if (attempt < RetryMaxAttempts)
+        {
+            var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
+            Console.Error.WriteLine($"  ⟳ {label}: transient {last.Item1} — retry {attempt}/{RetryMaxAttempts - 1} in {delay.TotalSeconds:N0}s");
+            await Task.Delay(delay);
+        }
+    }
+    return last;
+}
+
+// Retry a typed client call (TampIngestClient throws on failure) when the thrown fault is transient.
+static async Task<T> RetryOnExAsync<T>(Func<Task<T>> op, string label)
+{
+    for (var attempt = 1; ; attempt++)
+    {
+        try { return await op(); }
+        catch (Exception ex) when (attempt < RetryMaxAttempts && IsTransientException(ex))
+        {
+            var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
+            Console.Error.WriteLine($"  ⟳ {label}: {Trunc(ex.Message)} — retry {attempt}/{RetryMaxAttempts - 1} in {delay.TotalSeconds:N0}s");
+            await Task.Delay(delay);
+        }
+    }
+}
+
+// Non-generic variant for client calls that return a plain Task (e.g. PostScanRunsAsync).
+static Task RetryVoidAsync(Func<Task> op, string label)
+    => RetryOnExAsync(async () => { await op(); return 0; }, label);
 
 // An IChatCompletion (the Tamp.Conformance BYOK seam) over the Anthropic Messages API that
 // accumulates token usage — used by `generate` to report real rule-extraction cost.
