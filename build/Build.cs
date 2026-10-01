@@ -1,6 +1,9 @@
 using Tamp;
+using Tamp.CycloneDx.V6;
 using Tamp.DotNetCoverage.V18;
+using Tamp.Grype;
 using Tamp.NetCli.V10;
+using Tamp.OpenGrep;
 using Tamp.Security.Pipeline;
 using Tamp.SonarScanner.V10;
 
@@ -43,6 +46,20 @@ class Build : SecurityPipelineBuild
 
     AbsolutePath Artifacts => RootDirectory / "artifacts";
     AbsolutePath CoverageDir => Artifacts / "coverage";
+
+    // Nightly findings-evidence output dir. Defaults to artifacts/evidence (what nightly.yml sets
+    // EVIDENCE_DIR to); overridable via the EVIDENCE_DIR env var so the workflow stays the source of truth.
+    [Parameter("Output directory for nightly findings evidence.", EnvironmentVariable = "EVIDENCE_DIR")]
+    readonly string? EvidenceDirOverride = null;
+    AbsolutePath EvidenceDir => EvidenceDirOverride is { Length: > 0 } d ? AbsolutePath.Create(d) : Artifacts / "evidence";
+
+    // grype for the SCA evidence lane. Resolved from PATH (the nightly downloads + verifies the binary,
+    // then adds it to PATH). Distinct from SecurityPipelineBuild's osv-scanner SCA — findings' contract
+    // is built around grype's JSON (matches[] + descriptor.db provenance), see tools/findings-ingest.
+    // Optional: [FromPath] binds eagerly at startup, so a required attribute would fail EVERY target
+    // (Info, Compile, EvidenceSbom…) whenever grype isn't on PATH. Optional → null when absent; the
+    // EvidenceSca target self-skips via OnlyWhen, and only the SCA workflow step puts grype on PATH.
+    [FromPath("grype", Optional = true)] readonly Tool? GrypeTool = null;
 
     // ----- SecurityPipelineBuild overrides --------------------------------
 
@@ -181,6 +198,64 @@ class Build : SecurityPipelineBuild
     // merge / SecurityScanCveSbom / SecurityScanTrivy / SecurityPush / Security)
     // are inherited from SecurityPipelineBuild. Adopter overrides only the
     // SecurityProductName + SecuritySolutionPath properties above (TAM-253).
+
+    // ----- Nightly findings-evidence (dogfood the scanner wrappers) --------
+    //
+    // The Nightly Findings Ingest workflow pushes SBOM + SAST + SCA evidence to
+    // tamp-findings. These targets drive those three tools through the Tamp
+    // satellite wrappers (Tamp.CycloneDx.V6 / Tamp.OpenGrep / Tamp.Grype) instead
+    // of inline curl+bash, writing the exact filenames tools/findings-ingest reads
+    // from EvidenceDir. Acquisition (download + checksum-verify) stays in the
+    // workflow, which then puts the binaries on PATH. trufflehog is deliberately
+    // NOT here — it streams JSON to stdout (no file-output flag), which the
+    // CommandPlan model can't express; it stays inline in the workflow.
+
+    AbsolutePath EvidenceSbomFile => EvidenceDir / "sbom.cdx.json";
+    AbsolutePath EvidenceSastFile => EvidenceDir / "opengrep.sarif";
+    AbsolutePath EvidenceScaFile => EvidenceDir / "grype.json";
+
+    Target EvidenceSbom => _ => _
+        .Description("Nightly evidence: CycloneDX SBOM via Tamp.CycloneDx.V6 → EvidenceDir/sbom.cdx.json. Test projects are INCLUDED on purpose — findings' dev-closure classifier marks them devDependency from the shipping closure.")
+        .Executes(() =>
+        {
+            EvidenceDir.CreateDirectory();
+            return CycloneDx.Generate(s => s
+                .SetPath(Solution.Path)
+                .SetOutputDirectory(EvidenceDir)
+                .SetFilename(System.IO.Path.GetFileName(EvidenceSbomFile.Value))
+                .SetFormat(CycloneDxFormat.Json)
+                .SetWorkingDirectory(RootDirectory));
+        });
+
+    Target EvidenceSast => _ => _
+        .Description("Nightly evidence: OpenGrep SAST via Tamp.OpenGrep → EvidenceDir/opengrep.sarif.")
+        .Executes(() =>
+        {
+            EvidenceDir.CreateDirectory();
+            return OpenGrep.Scan(s => s
+                .AddConfig("auto")
+                .AddTarget(".")
+                .SetOutputFile(EvidenceSastFile.Value)
+                .SetQuiet(true)
+                .SetWorkingDirectory(RootDirectory));
+        });
+
+    // No DependsOn(EvidenceSbom): the workflow runs the SBOM step first, so the file already
+    // exists. Re-generating it here would run CycloneDX twice per nightly for no benefit.
+    // OnlyWhen(grype present): self-skips (not fails) if grype isn't on PATH — the SCA workflow
+    // step is best-effort, matching the prior inline "grype download/verify failed — skipping SCA".
+    Target EvidenceSca => _ => _
+        .Description("Nightly evidence: grype SCA against the SBOM via Tamp.Grype → EvidenceDir/grype.json.")
+        .OnlyWhen(() => GrypeTool is not null)
+        .Executes(() =>
+        {
+            EvidenceDir.CreateDirectory();
+            return Grype.Scan(GrypeTool!, s => s
+                .SetSbomSource(EvidenceSbomFile.Value)
+                .AddOutputJson()
+                .SetOutputFile(EvidenceScaFile.Value)
+                .SetWorkingDirectory(RootDirectory));
+        });
 
     Target Default => _ => _
         .DependsOn(nameof(Compile))

@@ -135,16 +135,19 @@ jobs:
           export PATH="$PATH:$HOME/.dotnet/tools"
           reportgenerator "-reports:./_cov/**/coverage.opencover.xml" "-targetdir:$EVIDENCE_DIR/coverage" "-reporttypes:Cobertura"
 
-      - name: SBOM (CycloneDX)
+      # Dogfood: drive CycloneDX through the Tamp.CycloneDx.V6 wrapper (build target EvidenceSbom)
+      # instead of inline `dotnet CycloneDX`. The dotnet-CycloneDX global tool is still installed —
+      # the wrapper shells out to `dotnet CycloneDX`.
+      - name: SBOM (CycloneDX via Tamp.CycloneDx.V6)
         if: env.SKIP != '1'
         run: |
           dotnet tool install --global CycloneDX --version 6.2.0
           export PATH="$PATH:$HOME/.dotnet/tools"
-          dotnet CycloneDX Tamp.slnx -o "$EVIDENCE_DIR" -fn sbom.cdx.json -F Json
+          dotnet run --project build/Build.csproj -c Release -- EvidenceSbom
 
       # SCA: scan the SBOM for CVEs. The ingest tool posts the results + a Grype scan-run
       # receipt (DB provenance in Notes) so "0 CVEs" means "scanned clean" not "never scanned".
-      - name: SCA (grype against SBOM, best-effort)
+      - name: SCA (grype via Tamp.Grype, best-effort)
         if: env.SKIP != '1'
         continue-on-error: true
         env:
@@ -160,13 +163,16 @@ jobs:
              && curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --retry-delay 2 -o grype_checksums.txt "${base}/grype_${GRYPE_VERSION}_checksums.txt" \
              && grep " ${tarball}\$" grype_checksums.txt | sha256sum -c - \
              && tar -xzf "$tarball" grype; then
-            ./grype "sbom:$EVIDENCE_DIR/sbom.cdx.json" -o json --file "$EVIDENCE_DIR/grype.json" || echo "grype scan non-zero — continuing"
+            chmod +x grype
+            # Put grype on PATH so the EvidenceSca target's [FromPath("grype")] resolves it.
+            export PATH="$PWD:$PATH"
+            dotnet run --project build/Build.csproj -c Release -- EvidenceSca || echo "grype SCA via Tamp.Grype non-zero — continuing"
           else
             echo "grype download/verify failed — skipping SCA"
           fi
 
       # Pinned version + HTTPS-only + SHA256 verify — never execute an unverified binary.
-      - name: SAST (opengrep, best-effort)
+      - name: SAST (opengrep via Tamp.OpenGrep, best-effort)
         if: env.SKIP != '1'
         continue-on-error: true
         env:
@@ -177,7 +183,9 @@ jobs:
           if curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --retry-delay 2 -o opengrep "https://github.com/opengrep/opengrep/releases/download/v${OPENGREP_VERSION}/opengrep_manylinux_x86" \
              && echo "${OPENGREP_SHA256}  opengrep" | sha256sum -c -; then
             chmod +x opengrep
-            ./opengrep scan --config auto --sarif --output "$EVIDENCE_DIR/opengrep.sarif" . || echo "opengrep scan non-zero — continuing"
+            # Put opengrep on PATH so the EvidenceSast target (Executable "opengrep") resolves it.
+            export PATH="$PWD:$PATH"
+            dotnet run --project build/Build.csproj -c Release -- EvidenceSast || echo "opengrep scan non-zero — continuing"
           else
             echo "opengrep download/verify failed — skipping SAST"
           fi
