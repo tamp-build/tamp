@@ -48,6 +48,9 @@
     <PackageReference Include="Tamp.SonarScanner.V10" />
     <PackageReference Include="Tamp.CycloneDx.V6" />
     <PackageReference Include="Tamp.OpenGrep" />
+    <!-- tamp-grype → Tamp.Grype: grype SCA for the nightly findings-evidence lane
+         (findings' canonical SCA tool; distinct from the osv-scanner path SecurityPipelineBuild uses). -->
+    <PackageReference Include="Tamp.Grype" />
     <PackageReference Include="Tamp.OsvScanner.V2" />
     <PackageReference Include="Tamp.Trivy" />
     <PackageReference Include="Tamp.DependencyTrack.V1" />
