@@ -259,6 +259,18 @@ async Task<int> IngestAsync()
         var (code, resp) = await PostStringAsync("/ingest/conformance", ndjson, "application/x-ndjson");
         if (code is 200 or 201) Console.WriteLine($"CONFORM  → {result.Results.Count} verdicts (pass={by.GetValueOrDefault("pass")} fail={by.GetValueOrDefault("fail")} unknown={by.GetValueOrDefault("unknown")}) → {Trunc(resp)}");
         else { Console.Error.WriteLine($"CONFORM  ✗ {code} {Trunc(resp)}"); errors++; }
+
+        // Surface each non-pass verdict in the log — the summary count alone ("fail=10") doesn't say
+        // WHICH ADR rules fail, so the dogfood gap stays invisible. Print fails/errors with location +
+        // evidence so they're actionable straight from the CI log. (unknown = semantic rule w/ no
+        // evaluator wired — deterministic-only run; not a real gap, so left out of this list.)
+        foreach (var r in result.Results.Where(r => r.Verdict is "fail" or "error")
+                                        .OrderBy(r => r.AdrRef, StringComparer.Ordinal).ThenBy(r => r.RuleId, StringComparer.Ordinal))
+        {
+            var loc = r.File is { Length: > 0 } ? $" {r.File}{(r.Line > 0 ? $":{r.Line}" : "")}" : "";
+            var why = Trunc(r.CodeEvidence ?? r.AdrQuote ?? "");
+            Console.WriteLine($"  CONFORM {(r.Verdict == "error" ? "‼" : "✗")} {r.AdrRef}/{r.RuleId}{loc} — {why}");
+        }
     }
     catch (Exception ex) { Console.Error.WriteLine($"CONFORM  ✗ {Trunc(ex.Message)}"); errors++; }
 
