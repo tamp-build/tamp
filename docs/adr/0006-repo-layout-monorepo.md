@@ -4,6 +4,7 @@
 * Date: 2026-05-09
 * Deciders: scott
 * Tracking: TAM-12
+* Partially superseded by: [ADR 0026](0026-satellite-repositories-for-wrappers.md) (2026-10-02, TAM-254) — first-party tool wrappers now ship as independent `tamp-<tool>` satellite repositories, not monorepo sources. The core (`Tamp.Core` + tightly-coupled siblings) remains a monorepo as decided here; only the "all first-party module sources" clause is superseded.
 
 ## Context and Problem Statement
 
