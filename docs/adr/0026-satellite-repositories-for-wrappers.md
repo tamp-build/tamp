@@ -1,6 +1,6 @@
 # ADR 0026: Satellite repositories for first-party tool wrappers
 
-**Status:** Proposed (2026-10-02). Partially supersedes [ADR 0006](0006-repo-layout-monorepo.md) — the "all first-party module sources in the monorepo" clause. Tracking: TAM-254.
+**Status:** Accepted (2026-10-02). Partially supersedes [ADR 0006](0006-repo-layout-monorepo.md) — the "all first-party module sources in the monorepo" clause. Tracking: TAM-254.
 
 **Context.** [ADR 0006](0006-repo-layout-monorepo.md) chose a single monorepo holding core, CLI, and **all** first-party module sources under one `Tamp.slnx`, each project publishing its own NuGet package. That held while the module set was small. It no longer matches reality: the first-party tool wrappers have been extracted into ~60 independent `tamp-<tool>` satellite repositories (TAM-254), each publishing `Tamp.<Family>.V<major>?` on its own cadence, pinned to a published `Tamp.Core` via `PackageReference`. The monorepo (`tamp-build/tamp`) now ships only the core line: `Tamp.Core`, `Tamp.Cli`/`dotnet-tamp`, `Tamp.NetCli.V{8,9,10}`, `Tamp.DotNetCoverage.V18`, `Tamp.Analyzers`, `Tamp.Sarif`, `Tamp.Sbom`, `Tamp.Security.Pipeline`.
 

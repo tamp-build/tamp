@@ -23,7 +23,7 @@ ADRs are append-only. Don't edit an Accepted ADR's substance after the fact — 
 | 0007 | [License — MIT](0007-license-mit.md)                                                   | Accepted |
 | 0009 | [Governance and namespace policy](0009-governance-and-namespace-policy.md)             | Accepted |
 | 0015 | [Target framework strategy](0015-target-framework-strategy.md)                         | Accepted |
-| 0026 | [Satellite repositories for first-party tool wrappers](0026-satellite-repositories-for-wrappers.md) | Proposed |
+| 0026 | [Satellite repositories for first-party tool wrappers](0026-satellite-repositories-for-wrappers.md) | Accepted |
 
 ADR numbers are stable and gap-allowed — they correspond 1:1 with the YouTrack tracking issues (`TAM-N`), so a deferred ADR keeps its slot until written.
 
