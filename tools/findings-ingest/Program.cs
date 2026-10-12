@@ -132,12 +132,12 @@ async Task<int> IngestAsync()
     };
     var errors = 0;
 
-    // 1) SBOM — hand-rolled POST so each component carries `devDependency` (dev/build-only marking for
-    // findings' staleness VEX exemption) + the dependency edges, which Tamp.Ingest.V1 0.2.2 PostSbomAsync
-    // doesn't yet carry (tracked: tamp-ingest-v1#8 — drop the hand-roll once the package ships the field).
-    // lic resolver runs first so license facts ride the SBOM; devDependency is computed from the per-project
-    // restore closures (shipping = packable src libs; dev = test projects + the Tamp.Analyzers
-    // DevelopmentDependency). Pure fact (what ships, per the build) — findings owns the exemption policy.
+    // 1) SBOM — via Tamp.Ingest.V1 0.3.0 PostSbomAsync (tamp-ingest-v1#8 shipped SbomComponent.DevDependency
+    // + the mapper classifier, retiring the former hand-rolled POST). The lic resolver runs first so license
+    // facts ride the SBOM; devDependency is a producer fact computed from the per-project restore closures
+    // (shipping = packable src libs; dev = test projects + the Tamp.Analyzers DevelopmentDependency) and
+    // applied per component by the mapper. Dependency edges are carried by the mapper. findings owns the
+    // exemption policy.
     Guid? sbomSnapshotId = null;
     var sbomComponents = 0;
     var sbomPath = Path.Combine(evidence, "sbom.cdx.json");
@@ -146,22 +146,23 @@ async Task<int> IngestAsync()
         {
             var (sbomToLoad, licResolved) = ResolveLicenses(sbomPath);
             var shipping = ShippingClosure(repoRoot);
-            var (body, count, devCount) = BuildSbomBody(sbomToLoad, hier, shipping);
+            var bom = SbomReader.Parse(File.ReadAllText(sbomToLoad));
+            var sbomReq = CycloneDxSbomMapper.BuildRequest(hier, bom,
+                toolName: "CycloneDX", toolVersion: "6.2.0",
+                metadataTools: new[] { new SbomMetadataTool { Vendor = "CycloneDX", Name = "CycloneDX module for .NET", Version = "6.2.0" } },
+                isDevDependency: c => !shipping.Contains($"{c.Name}|{c.Version}"));
+            var count = sbomReq.Components.Count;
+            var devCount = sbomReq.Components.Count(c => c.DevDependency == true);
             sbomComponents = count;
-            var (sc, sr) = await PostStringAsync("/ingest/sbom", body, "application/json");
-            if (sc is 200 or 201)
-            {
-                using var sd = JsonDocument.Parse(sr);
-                if (sd.RootElement.TryGetProperty("sbomSnapshotId", out var sid) && Guid.TryParse(sid.GetString(), out var g)) sbomSnapshotId = g;
-                Console.WriteLine($"SBOM     → snapshot={sbomSnapshotId} components={count} dev={devCount} shipping={count - devCount} licenses-resolved={licResolved}");
+            var sbomResp = await RetryOnExAsync(() => ingest.PostSbomAsync(sbomReq), "SBOM");
+            sbomSnapshotId = sbomResp.SbomSnapshotId;
+            Console.WriteLine($"SBOM     → snapshot={sbomSnapshotId} components={count} dev={devCount} shipping={count - devCount} licenses-resolved={licResolved}");
 
-                // Enrich components with registry version data (LatestVersion / LatestReleasedAt) so SBOM
-                // freshness reads real values, not "Not assessed". findings only enriches on this call.
-                var (ec, er) = await PostStringAsync($"/sbom-components/enrich-versions?snapshotId={sbomSnapshotId}", "", "application/json");
-                if (ec is 200 or 201) Console.WriteLine($"SBOM-ENR → {Trunc(er)}");
-                else Console.Error.WriteLine($"SBOM-ENR ⚠ {ec} {Trunc(er)}");
-            }
-            else { Console.Error.WriteLine($"SBOM     ✗ {sc} {Trunc(sr)}"); errors++; }
+            // Enrich components with registry version data (LatestVersion / LatestReleasedAt) so SBOM
+            // freshness reads real values, not "Not assessed". findings only enriches on this call.
+            var (ec, er) = await PostStringAsync($"/sbom-components/enrich-versions?snapshotId={sbomSnapshotId}", "", "application/json");
+            if (ec is 200 or 201) Console.WriteLine($"SBOM-ENR → {Trunc(er)}");
+            else Console.Error.WriteLine($"SBOM-ENR ⚠ {ec} {Trunc(er)}");
         }
         catch (Exception ex) { Console.Error.WriteLine($"SBOM     ✗ {Trunc(ex.Message)}"); errors++; }
     else Console.Error.WriteLine($"SBOM     ⚠ missing {sbomPath}");
@@ -584,69 +585,6 @@ static HashSet<string> ShippingClosure(string repoRoot)
         catch { /* best-effort; a missing assets file just means fewer shipping entries */ }
     }
     return set;
-}
-
-// Build the /ingest/sbom request body (findings' SbomContracts shape) from the resolved CycloneDX JSON:
-// per-component {purl,name,version,kind,license,vulnerabilities[],hashes{},devDependency} + parent→child
-// edges. devDependency = component not in the shipping closure. Returns (json, componentCount, devCount).
-static (string Body, int Count, int DevCount) BuildSbomBody(string cycloneDxPath, IngestHierarchy hier, HashSet<string> shipping)
-{
-    var root = JsonNode.Parse(File.ReadAllText(cycloneDxPath))!;
-    var comps = root["components"]?.AsArray() ?? new JsonArray();
-    var outComps = new List<Dictionary<string, object?>>();
-    var dev = 0;
-    foreach (var c in comps)
-    {
-        var name = c?["name"]?.GetValue<string>() ?? "";
-        var ver = c?["version"]?.GetValue<string>() ?? "";
-        var isDev = !shipping.Contains($"{name}|{ver}");
-        if (isDev) dev++;
-
-        string? lic = null;
-        foreach (var le in c?["licenses"]?.AsArray() ?? new JsonArray())
-        {
-            var lo = le?["license"]?.AsObject();
-            lic = lo is not null ? (lo["id"]?.GetValue<string>() ?? lo["name"]?.GetValue<string>()) : le?["expression"]?.GetValue<string>();
-            if (!string.IsNullOrEmpty(lic)) break;
-        }
-
-        var hashes = new Dictionary<string, string>();
-        foreach (var h in c?["hashes"]?.AsArray() ?? new JsonArray())
-        {
-            var a = h?["alg"]?.GetValue<string>(); var v = h?["content"]?.GetValue<string>();
-            if (a is not null && v is not null) hashes[a] = v;
-        }
-
-        outComps.Add(new()
-        {
-            ["purl"] = c?["purl"]?.GetValue<string>(), ["name"] = name, ["version"] = ver,
-            ["kind"] = c?["type"]?.GetValue<string>() ?? "library",
-            ["license"] = lic, ["vulnerabilities"] = Array.Empty<object>(),
-            ["hashes"] = hashes, ["devDependency"] = isDev,
-        });
-    }
-
-    var edges = new List<Dictionary<string, object?>>();
-    foreach (var e in root["dependencies"]?.AsArray() ?? new JsonArray())
-    {
-        var parent = e?["ref"]?.GetValue<string>();
-        if (parent is null) continue;
-        foreach (var ch in e?["dependsOn"]?.AsArray() ?? new JsonArray())
-            if (ch?.GetValue<string>() is { } cp) edges.Add(new() { ["parentPurl"] = parent, ["childPurl"] = cp });
-    }
-
-    var body = new Dictionary<string, object?>
-    {
-        ["client"] = hier.Client, ["project"] = hier.Project, ["component"] = hier.Component, ["componentKind"] = hier.ComponentKind,
-        ["flavor"] = null, ["version"] = hier.Version, ["commitSha"] = hier.CommitSha, ["branch"] = hier.Branch,
-        ["buildId"] = null, ["pullRequestRef"] = null,
-        ["serialNumber"] = root["serialNumber"]?.GetValue<string>(), ["specVersion"] = root["specVersion"]?.GetValue<string>() ?? "1.7",
-        ["toolName"] = "CycloneDX", ["toolVersion"] = "6.2.0",
-        ["components"] = outComps, ["dependencies"] = edges,
-        ["metadataTools"] = new[] { new Dictionary<string, object?> { ["vendor"] = "CycloneDX", ["name"] = "CycloneDX module for .NET", ["version"] = "6.2.0" } },
-        ["actor"] = null,
-    };
-    return (JsonSerializer.Serialize(body, new JsonSerializerOptions { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull }), outComps.Count, dev);
 }
 
 // lic tool — resolve a CycloneDX SBOM's legacy `licenseUrl` / "Unknown - See URL" components to
