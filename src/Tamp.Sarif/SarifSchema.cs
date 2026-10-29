@@ -217,6 +217,48 @@ public sealed record SarifReportingDescriptorRelationship
 public sealed record SarifLocation
 {
     public SarifPhysicalLocation? PhysicalLocation { get; init; }
+
+    /// <summary>
+    /// SARIF 2.1.0 location.logicalLocations (§3.28.4). Where a finding has no
+    /// file to point at — a finding about an advertised MCP tool, a service
+    /// endpoint, a named function with no source on disk — the logical location
+    /// carries its identity instead of a synthesised file path. A consumer that
+    /// needs cross-run finding identity keys on the <see cref="SarifLogicalLocation.FullyQualifiedName"/>
+    /// here (which <see cref="SarifDedup"/> now folds into its key when present).
+    /// </summary>
+    public IReadOnlyList<SarifLogicalLocation>? LogicalLocations { get; init; }
+}
+
+/// <summary>
+/// SARIF 2.1.0 logicalLocation (§3.33). Names a program element — a function,
+/// a namespace, a service, an advertised tool — independent of any file.
+/// </summary>
+public sealed record SarifLogicalLocation
+{
+    /// <summary>The bare name of the element, e.g. the tool name "query_database".</summary>
+    public string? Name { get; init; }
+
+    /// <summary>
+    /// The fully qualified name — the stable, unique identity of the element,
+    /// e.g. "https://mcp.example.com/mcp/query_database". This is the field a
+    /// consumer dedupes and correlates on.
+    /// </summary>
+    public string? FullyQualifiedName { get; init; }
+
+    /// <summary>
+    /// The kind of element, e.g. "function", "namespace", or a tool-specific
+    /// kind such as "mcpTool" / "mcpPrompt" / "mcpResource".
+    /// </summary>
+    public string? Kind { get; init; }
+
+    /// <summary>A decorated (e.g. mangled) form of the name, when the tool has one.</summary>
+    public string? DecoratedName { get; init; }
+
+    /// <summary>Index into run.logicalLocations when the element is cached at the run level.</summary>
+    public int? Index { get; init; }
+
+    /// <summary>Index of the parent logical location in run.logicalLocations, for nesting.</summary>
+    public int? ParentIndex { get; init; }
 }
 
 /// <summary>SARIF 2.1.0 physicalLocation (§3.29). File + region.</summary>
