@@ -13,6 +13,7 @@ using Tamp.Sbom;
 // tamp-core dogfood: push our own build evidence to tamp-findings and gate on the result.
 //
 //   ingest  — SBOM + SAST + secrets + coverage + test-results + conformance + receipts → findings
+//   posture — repo/org security posture (branch protection, reviews, signatures, CODEOWNERS, org 2FA) → findings
 //   gate    — GET the ship gate; exit 1 if any blocking gate fails (ClearToShip == false)
 //
 // Config (env):
@@ -78,8 +79,9 @@ http.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
 if (cmd == "gate") return await GateAsync();
 if (cmd == "ingest") return await IngestAsync();
 if (cmd == "quality") return await QualityAsync();
+if (cmd == "posture") return await PostureAsync();
 if (cmd == "generate") return await GenerateAsync();
-Console.Error.WriteLine($"unknown command '{cmd}' (expected: ingest | quality | gate | generate)");
+Console.Error.WriteLine($"unknown command '{cmd}' (expected: ingest | quality | posture | gate | generate)");
 return 2;
 
 async Task<int> GateAsync()
@@ -445,6 +447,170 @@ async Task<int> GenerateAsync()
     return 0;
 }
 
+// POST /ingest/posture (TAM-290) — repo/org security posture as FACTS, not judgements. Reads five
+// GitHub signals via `gh api` and reports each as pass|fail|not-applicable|unknown. Posture is a
+// property of the repo/org (no build/commit), so the body is just client/project/source/observations.
+//
+// Non-blocking by construction: a signal we cannot read is reported `unknown`, never omitted — the
+// full set is posted every run (findings ages an observation out after 30 days, and an enabled gate
+// with no report is itself Unknown+blocking, so silence is the worse failure). findings decides what
+// gates (CM-3 / CM-5 / CM-5(1) / IA-2(1) / IA-2(2)); this just tells it the truth.
+//
+// Auth: `gh` uses GH_TOKEN. branch-protection / required_signatures need `administration: read`;
+// contents needs `contents: read`. org-2fa needs a `read:org` token — the default GITHUB_TOKEN
+// cannot read it, so on an org repo org-2fa reports `unknown` unless a read:org token is supplied.
+async Task<int> PostureAsync()
+{
+    var repo = Env("GITHUB_REPOSITORY", "tamp-build/tamp");
+    var slash = repo.IndexOf('/');
+    var owner = slash > 0 ? repo[..slash] : repo;
+    var name = slash > 0 ? repo[(slash + 1)..] : repo;
+    Console.WriteLine($"→ {url}  POSTURE {client}/{project}  repo={owner}/{name}\n");
+
+    // Repo record: owner type (→ org-2fa applicability) + default branch (protection is defined on it).
+    string? ownerType = null, defaultBranch = null;
+    var (repoOut, _, repoExit) = Gh($"api repos/{owner}/{name}", repoRoot);
+    if (repoExit == 0)
+        try
+        {
+            using var d = JsonDocument.Parse(repoOut);
+            defaultBranch = Prop(d.RootElement, "default_branch");
+            if (d.RootElement.TryGetProperty("owner", out var ow)) ownerType = Prop(ow, "type");
+        }
+        catch { /* fall through to defaults */ }
+    var brch = Env("TAMP_BRANCH", defaultBranch ?? "main");
+
+    var now = DateTimeOffset.UtcNow;
+    var obs = new List<PostureObservation>();
+    PostureObservation O(string id, PostureStatus s, string? detail = null) =>
+        new() { CheckId = id, Status = s, Detail = detail, ObservedAt = now };
+
+    // 1+2) branch-protection + pr-reviews-required — one payload.
+    var (protOut, protErr, protExit) = Gh($"api repos/{owner}/{name}/branches/{brch}/protection", repoRoot);
+    if (protExit == 0)
+        try
+        {
+            using var d = JsonDocument.Parse(protOut);
+            var r = d.RootElement;
+            var forceAllowed = r.TryGetProperty("allow_force_pushes", out var afp)
+                && afp.TryGetProperty("enabled", out var afpe) && afpe.ValueKind == JsonValueKind.True;
+            var checks = 0;
+            if (r.TryGetProperty("required_status_checks", out var rsc) && rsc.ValueKind == JsonValueKind.Object)
+            {
+                if (rsc.TryGetProperty("checks", out var ch) && ch.ValueKind == JsonValueKind.Array) checks = ch.GetArrayLength();
+                else if (rsc.TryGetProperty("contexts", out var ctx) && ctx.ValueKind == JsonValueKind.Array) checks = ctx.GetArrayLength();
+            }
+            obs.Add(forceAllowed
+                ? O("branch-protection", PostureStatus.Fail, $"branch protected but force-push allowed; {checks} status checks required")
+                : O("branch-protection", PostureStatus.Pass, $"force-push blocked; {checks} status checks required"));
+
+            var reviews = 0;
+            var hasReviews = r.TryGetProperty("required_pull_request_reviews", out var rpr) && rpr.ValueKind == JsonValueKind.Object;
+            if (hasReviews && rpr.TryGetProperty("required_approving_review_count", out var cnt) && cnt.TryGetInt32(out var c)) reviews = c;
+            obs.Add(hasReviews && reviews >= 1
+                ? O("pr-reviews-required", PostureStatus.Pass, $"{reviews} approving review{(reviews == 1 ? "" : "s")} required")
+                : O("pr-reviews-required", PostureStatus.Fail, "no approving review required"));
+        }
+        catch
+        {
+            obs.Add(O("branch-protection", PostureStatus.Unknown, "protection payload unparseable"));
+            obs.Add(O("pr-reviews-required", PostureStatus.Unknown, "protection payload unparseable"));
+        }
+    else
+    {
+        var st = GhHttpStatus(protErr);
+        if (st == 404)
+        {
+            obs.Add(O("branch-protection", PostureStatus.Fail, $"branch '{brch}' not protected"));
+            obs.Add(O("pr-reviews-required", PostureStatus.Fail, $"branch '{brch}' not protected"));
+        }
+        else
+        {
+            var why = $"cannot read branch protection{(st > 0 ? $" (HTTP {st})" : "")}";
+            obs.Add(O("branch-protection", PostureStatus.Unknown, why));
+            obs.Add(O("pr-reviews-required", PostureStatus.Unknown, why));
+        }
+    }
+
+    // 3) signed-commits — dedicated sub-resource (unambiguous vs. digging in the protection blob).
+    var (sigOut, sigErr, sigExit) = Gh($"api repos/{owner}/{name}/branches/{brch}/protection/required_signatures", repoRoot);
+    if (sigExit == 0)
+        try
+        {
+            using var d = JsonDocument.Parse(sigOut);
+            var enabled = d.RootElement.TryGetProperty("enabled", out var e) && e.ValueKind == JsonValueKind.True;
+            obs.Add(O("signed-commits", enabled ? PostureStatus.Pass : PostureStatus.Fail, enabled ? "required" : "not required"));
+        }
+        catch { obs.Add(O("signed-commits", PostureStatus.Unknown, "required_signatures payload unparseable")); }
+    else
+    {
+        var st = GhHttpStatus(sigErr);
+        obs.Add(st == 404
+            ? O("signed-commits", PostureStatus.Fail, "not required")
+            : O("signed-commits", PostureStatus.Unknown, $"cannot read required_signatures{(st > 0 ? $" (HTTP {st})" : "")}"));
+    }
+
+    // 4) codeowners — present at any of the three canonical locations.
+    bool coFound = false, coForbidden = false;
+    var coWhere = "";
+    foreach (var p in new[] { ".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS" })
+    {
+        var (_, coErr, coExit) = Gh($"api repos/{owner}/{name}/contents/{p}", repoRoot);
+        if (coExit == 0) { coFound = true; coWhere = p; break; }
+        if (GhHttpStatus(coErr) is 401 or 403) coForbidden = true;
+    }
+    obs.Add(coFound ? O("codeowners", PostureStatus.Pass, $"present at {coWhere}")
+        : coForbidden ? O("codeowners", PostureStatus.Unknown, "cannot read repo contents")
+        : O("codeowners", PostureStatus.Fail, "no CODEOWNERS file"));
+
+    // 5) org-2fa — n/a for a user-owned repo; otherwise needs a read:org token to be visible.
+    if (string.Equals(ownerType, "User", StringComparison.OrdinalIgnoreCase))
+        obs.Add(O("org-2fa", PostureStatus.NotApplicable, "user-owned repo"));
+    else
+    {
+        var (orgOut, orgErr, orgExit) = Gh($"api orgs/{owner}", repoRoot);
+        if (orgExit == 0)
+            try
+            {
+                using var d = JsonDocument.Parse(orgOut);
+                if (d.RootElement.TryGetProperty("two_factor_requirement_enabled", out var tf) && tf.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                    obs.Add(O("org-2fa", tf.GetBoolean() ? PostureStatus.Pass : PostureStatus.Fail, tf.GetBoolean() ? "org requires 2FA" : "org does not require 2FA"));
+                else
+                    obs.Add(O("org-2fa", PostureStatus.Unknown, "org 2FA requirement not visible to this token (needs read:org)"));
+            }
+            catch { obs.Add(O("org-2fa", PostureStatus.Unknown, "org payload unparseable")); }
+        else
+        {
+            var st = GhHttpStatus(orgErr);
+            obs.Add(O("org-2fa", PostureStatus.Unknown, $"cannot read org{(st > 0 ? $" (HTTP {st})" : "")} (needs read:org)"));
+        }
+    }
+
+    foreach (var o in obs)
+    {
+        var mark = o.Status switch
+        {
+            PostureStatus.Pass => "PASS",
+            PostureStatus.Fail => "FAIL",
+            PostureStatus.NotApplicable => "n/a ",
+            _ => "????",
+        };
+        Console.WriteLine($"  {mark} {o.CheckId,-20} {o.Detail}");
+    }
+
+    using var ingest = new TampIngestClient(new Uri(url), new Secret("ingest-token", token));
+    try
+    {
+        await RetryVoidAsync(() => ingest.PostPostureAsync(new PostureIngestRequest
+        {
+            Client = client, Project = project, Observations = obs,
+        }), "POSTURE");
+        Console.WriteLine($"\nPOSTURE  → {obs.Count} observations posted ({client}/{project}) ✅");
+        return 0;
+    }
+    catch (Exception ex) { Console.Error.WriteLine($"\nPOSTURE  ✗ {Trunc(ex.Message)}"); return 1; }
+}
+
 // POST /ingest/scan-usage — token usage for a build's scan run (replace-on-ingest). Empty `usage`
 // is meaningful: "scan ran, spent no model tokens" (the deterministic check). findings owns pricing.
 async Task PostScanUsageAsync(IEnumerable<object> usage)
@@ -671,6 +837,35 @@ static string? ResolvePurlToSpdx(string? purl)
 
 static string? FirstExisting(params string[] paths) => Array.Find(paths, File.Exists);
 static string Short(string sha) => sha.Length >= 7 ? sha[..7] : sha;
+
+// Run `gh <args>` (the authenticated GitHub CLI) and capture (stdout, stderr, exitCode). Mirrors the
+// Git() shell-out above — findings-ingest shells out rather than taking a GitHub-client package
+// dependency. gh exits non-zero on an HTTP error and prints "... (HTTP <code>)" to stderr.
+static (string Out, string Err, int Exit) Gh(string args, string cwd)
+{
+    try
+    {
+        var psi = new ProcessStartInfo(ResolveExe("gh"), args)
+        { WorkingDirectory = cwd, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        using var p = Process.Start(psi)!;
+        var o = p.StandardOutput.ReadToEnd();
+        var e = p.StandardError.ReadToEnd();
+        p.WaitForExit();
+        return (o, e, p.ExitCode);
+    }
+    catch (Exception ex) { return ("", ex.Message, -1); }
+}
+
+// Pull the HTTP status out of a gh error line like "gh: Branch not protected (HTTP 404)"; 0 if none.
+static int GhHttpStatus(string stderr)
+{
+    var m = System.Text.RegularExpressions.Regex.Match(stderr ?? "", @"\(HTTP (\d{3})\)",
+        System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
+    return m.Success ? int.Parse(m.Groups[1].Value) : 0;
+}
+
+static string? Prop(JsonElement e, string name)
+    => e.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
 static string Trunc(string s) { s = s.Replace('\n', ' ').Trim(); return s.Length > 200 ? s[..200] + "…" : s; }
 
 // --- Transient-failure resilience ---------------------------------------------------------------
