@@ -2,13 +2,20 @@ namespace Tamp.Sarif;
 
 /// <summary>
 /// Collapse duplicate SARIF results. The dedup key is
-/// <c>(ruleId, first-location URI, startLine, startColumn)</c> — the
-/// minimal identity for "this rule fired at this spot." Multi-TFM .NET
-/// builds emit the same source-level finding once per TFM via
-/// <c>/p:ErrorLog</c>; this helper folds those triplets back to a single
+/// <c>(ruleId, first-location URI, startLine, startColumn, first-location
+/// fullyQualifiedName)</c> — the minimal identity for "this rule fired at this
+/// spot." Multi-TFM .NET builds emit the same source-level finding once per TFM
+/// via <c>/p:ErrorLog</c>; this helper folds those triplets back to a single
 /// entry without losing the tool-of-origin (first occurrence's run is
 /// preserved).
 /// </summary>
+/// <remarks>
+/// The fully-qualified logical-location component is what keeps findings that
+/// have <em>no</em> file to point at — a finding per advertised MCP tool, say —
+/// from all collapsing onto one <c>(ruleId, (no-uri), 0:0)</c> key. For a result
+/// with no logical location the component is a constant, so dedup behaviour for
+/// physical-location findings (every existing scanner) is unchanged.
+/// </remarks>
 public static class SarifDedup
 {
     /// <summary>
@@ -63,6 +70,13 @@ public static class SarifDedup
         var line = physical?.Region?.StartLine ?? 0;
         var col = physical?.Region?.StartColumn ?? 0;
 
-        return $"{ruleId}|{uri}|{line}:{col}";
+        // Logical-location identity for findings with no file to point at. A
+        // constant "(no-logical)" when absent, so physical-location findings
+        // (every existing scanner) keep the exact key they had before.
+        var logical = firstLocation?.LogicalLocations is { Count: > 0 } logicals
+            ? logicals[0].FullyQualifiedName ?? logicals[0].Name ?? "(no-logical)"
+            : "(no-logical)";
+
+        return $"{ruleId}|{uri}|{line}:{col}|{logical}";
     }
 }
