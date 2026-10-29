@@ -859,7 +859,8 @@ static (string Out, string Err, int Exit) Gh(string args, string cwd)
 // Pull the HTTP status out of a gh error line like "gh: Branch not protected (HTTP 404)"; 0 if none.
 static int GhHttpStatus(string stderr)
 {
-    var m = System.Text.RegularExpressions.Regex.Match(stderr ?? "", @"\(HTTP (\d{3})\)");
+    var m = System.Text.RegularExpressions.Regex.Match(stderr ?? "", @"\(HTTP (\d{3})\)",
+        System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
     return m.Success ? int.Parse(m.Groups[1].Value) : 0;
 }
 
