@@ -456,9 +456,14 @@ async Task<int> GenerateAsync()
 // with no report is itself Unknown+blocking, so silence is the worse failure). findings decides what
 // gates (CM-3 / CM-5 / CM-5(1) / IA-2(1) / IA-2(2)); this just tells it the truth.
 //
-// Auth: `gh` uses GH_TOKEN. branch-protection / required_signatures need `administration: read`;
-// contents needs `contents: read`. org-2fa needs a `read:org` token — the default GITHUB_TOKEN
-// cannot read it, so on an org repo org-2fa reports `unknown` unless a read:org token is supplied.
+// Auth: `gh` uses GH_TOKEN.
+//   - Whether the branch is protected, and codeowners, are readable with `contents: read`, so the default
+//     GITHUB_TOKEN covers them.
+//   - Force-push, review and signature settings need Administration:read. That is NOT a GITHUB_TOKEN
+//     permission scope (`administration` is invalid in a workflow `permissions:` block and invalidates the
+//     whole file), so it takes a fine-grained PAT or a GitHub App token.
+//   - org-2fa needs org-owner/read:org visibility.
+// Without those, the affected checks report `unknown` with the reason, never a false `fail`.
 async Task<int> PostureAsync()
 {
     var repo = Env("GITHUB_REPOSITORY", "tamp-build/tamp");
@@ -485,8 +490,31 @@ async Task<int> PostureAsync()
     PostureObservation O(string id, PostureStatus s, string? detail = null) =>
         new() { CheckId = id, Status = s, Detail = detail, ObservedAt = now };
 
+    // 0) Ground truth that needs no admin scope. branches/{b} says whether the branch is protected at all,
+    //    and lists its required status checks. The detailed protection endpoints below need Administration:read,
+    //    and they answer 404 both for "not protected" and for "you may not see this". So a 404 from them means
+    //    "fail" only when this call says the branch is unprotected, or when the token has proven it has admin
+    //    read. Otherwise the result is unknown, never a false fail.
+    bool? isProtected = null;
+    var publicChecks = 0;
+    var (brOut, brErr, brExit) = Gh($"api repos/{owner}/{name}/branches/{brch}", repoRoot);
+    if (brExit == 0)
+        try
+        {
+            using var d = JsonDocument.Parse(brOut);
+            if (d.RootElement.TryGetProperty("protected", out var pr) && pr.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                isProtected = pr.ValueKind == JsonValueKind.True;
+            if (d.RootElement.TryGetProperty("protection", out var pn) && pn.ValueKind == JsonValueKind.Object
+                && pn.TryGetProperty("required_status_checks", out var prsc) && prsc.ValueKind == JsonValueKind.Object
+                && prsc.TryGetProperty("contexts", out var pctx) && pctx.ValueKind == JsonValueKind.Array)
+                publicChecks = pctx.GetArrayLength();
+        }
+        catch { /* leave isProtected null → unknown below */ }
+    var brWhy = brExit == 0 ? "" : $" (branch lookup failed{(GhHttpStatus(brErr) is var bs and > 0 ? $": HTTP {bs}" : "")})";
+
     // 1+2) branch-protection + pr-reviews-required — one payload.
     var (protOut, protErr, protExit) = Gh($"api repos/{owner}/{name}/branches/{brch}/protection", repoRoot);
+    var haveAdminRead = protExit == 0;
     if (protExit == 0)
         try
         {
@@ -519,14 +547,17 @@ async Task<int> PostureAsync()
     else
     {
         var st = GhHttpStatus(protErr);
-        if (st == 404)
+        if (isProtected == false)
         {
             obs.Add(O("branch-protection", PostureStatus.Fail, $"branch '{brch}' not protected"));
             obs.Add(O("pr-reviews-required", PostureStatus.Fail, $"branch '{brch}' not protected"));
         }
         else
         {
-            var why = $"cannot read branch protection{(st > 0 ? $" (HTTP {st})" : "")}";
+            var why = isProtected == true
+                ? $"branch '{brch}' is protected ({publicChecks} status checks required), but force-push/review " +
+                  $"settings need an Administration:read token{(st > 0 ? $" (HTTP {st})" : "")}"
+                : $"cannot read branch protection{(st > 0 ? $" (HTTP {st})" : "")}{brWhy}";
             obs.Add(O("branch-protection", PostureStatus.Unknown, why));
             obs.Add(O("pr-reviews-required", PostureStatus.Unknown, why));
         }
@@ -545,9 +576,12 @@ async Task<int> PostureAsync()
     else
     {
         var st = GhHttpStatus(sigErr);
-        obs.Add(st == 404
-            ? O("signed-commits", PostureStatus.Fail, "not required")
-            : O("signed-commits", PostureStatus.Unknown, $"cannot read required_signatures{(st > 0 ? $" (HTTP {st})" : "")}"));
+        obs.Add(isProtected == false
+            ? O("signed-commits", PostureStatus.Fail, $"branch '{brch}' not protected, so signatures are not required")
+            : st == 404 && haveAdminRead
+                ? O("signed-commits", PostureStatus.Fail, "not required")
+                : O("signed-commits", PostureStatus.Unknown,
+                    $"cannot read required_signatures{(st > 0 ? $" (HTTP {st})" : "")}; needs an Administration:read token"));
     }
 
     // 4) codeowners — present at any of the three canonical locations.
