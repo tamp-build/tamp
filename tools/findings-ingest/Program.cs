@@ -280,12 +280,13 @@ async Task<int> IngestAsync()
     // 7) Scan-run receipts
     try
     {
-        await RetryVoidAsync(() => ingest.PostScanRunsAsync(new ScanRunsIngestRequest
+        var rr = await RetryOnExAsync(() => ingest.PostScanRunsAsync(new ScanRunsIngestRequest
         {
             Client = client, Project = project, Component = component, ComponentKind = "solution",
             Version = version, CommitSha = commit, Branch = branch, Receipts = receipts,
         }), "RECEIPTS");
-        Console.WriteLine($"RECEIPTS → {receipts.Count} posted");
+        // Log what the sink STORED and which build it landed on, not just what we sent (TAM-293).
+        Console.WriteLine($"RECEIPTS → {receipts.Count} posted, {rr.ReceiptsUpserted} upserted (componentVersion {rr.ComponentVersionId})");
     }
     catch (Exception ex) { Console.Error.WriteLine($"RECEIPTS ✗ {Trunc(ex.Message)}"); errors++; }
 
@@ -635,11 +636,12 @@ async Task<int> PostureAsync()
     using var ingest = new TampIngestClient(new Uri(url), new Secret("ingest-token", token));
     try
     {
-        await RetryVoidAsync(() => ingest.PostPostureAsync(new PostureIngestRequest
+        var pr = await RetryOnExAsync(() => ingest.PostPostureAsync(new PostureIngestRequest
         {
             Client = client, Project = project, Observations = obs,
         }), "POSTURE");
-        Console.WriteLine($"\nPOSTURE  → {obs.Count} observations posted ({client}/{project}) ✅");
+        Console.WriteLine($"\nPOSTURE  → {obs.Count} posted; sink accepted {pr.Accepted} ({pr.Created} new, {pr.Updated} updated) " +
+                          $"on project {pr.ProjectId} ({client}/{project}) ✅");
         return 0;
     }
     catch (Exception ex) { Console.Error.WriteLine($"\nPOSTURE  ✗ {Trunc(ex.Message)}"); return 1; }
@@ -963,10 +965,6 @@ static async Task<T> RetryOnExAsync<T>(Func<Task<T>> op, string label)
         }
     }
 }
-
-// Non-generic variant for client calls that return a plain Task (e.g. PostScanRunsAsync).
-static Task RetryVoidAsync(Func<Task> op, string label)
-    => RetryOnExAsync(async () => { await op(); return 0; }, label);
 
 // An IChatCompletion (the Tamp.Conformance BYOK seam) over the Anthropic Messages API that
 // accumulates token usage — used by `generate` to report real rule-extraction cost.
