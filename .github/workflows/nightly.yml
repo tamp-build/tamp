@@ -70,12 +70,11 @@ jobs:
     needs: evidence
     if: github.repository == 'tamp-build/tamp'
     runs-on: ubuntu-latest
-    # administration:read lets the posture collector read branch protection + required signatures
-    # for TAM-290 (a job-level block replaces the top-level default, so contents:read is repeated).
-    # org-2fa needs a read:org token the default GITHUB_TOKEN lacks, so it reports `unknown` here.
+    # Do NOT add `administration:` here. It is not a GITHUB_TOKEN permission scope, and an unknown scope
+    # invalidates this entire workflow file, so no job runs at all. The posture step reads branch-protection
+    # detail through the optional POSTURE_TOKEN secret instead.
     permissions:
       contents: read
-      administration: read
     env:
       FINDINGS_TOKEN: ${{ secrets.FINDINGS_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -264,11 +263,15 @@ jobs:
       # Repo/org security posture (TAM-290) — facts for findings to gate CM-3 / CM-5 / CM-5(1) /
       # IA-2(1) / IA-2(2). Non-failing: unreadable signals are reported `unknown`, and findings gates
       # are off until it enables them, so this can never break the nightly.
+      # GITHUB_TOKEN can see whether the branch is protected, and CODEOWNERS. Force-push, review and
+      # signature detail needs Administration:read, and org-2fa needs org visibility. Those come only from
+      # an optional POSTURE_TOKEN secret (a fine-grained PAT or GitHub App token). Without it, those checks
+      # report `unknown`.
       - name: Posture → findings (TAM-290, non-failing)
         if: env.SKIP != '1'
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.POSTURE_TOKEN || github.token }}
           TAMP_BRANCH: ${{ github.ref_name }}
         run: dotnet run --project tools/findings-ingest/FindingsIngest.csproj -c Release -- posture
 
