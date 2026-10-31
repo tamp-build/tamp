@@ -12,7 +12,8 @@ using Tamp.Sbom;
 
 // tamp-core dogfood: push our own build evidence to tamp-findings and gate on the result.
 //
-//   ingest  — SBOM + SAST + secrets + coverage + test-results + conformance + receipts → findings
+//   ingest  — SBOM + SAST + secrets + coverage + test-results + conformance + receipts → findings,
+//             then reads the commit back (GET /ingest/builds/{sha}) and fails if any of it did not land
 //   posture — repo/org security posture (branch protection, reviews, signatures, CODEOWNERS, org 2FA) → findings
 //   gate    — GET the ship gate; exit 1 if any blocking gate fails (ClearToShip == false)
 //
@@ -26,6 +27,7 @@ using Tamp.Sbom;
 //   TAMP_BRANCH         default `git rev-parse --abbrev-ref HEAD`
 //   EVIDENCE_DIR        default ./artifacts/evidence (sbom.cdx.json, opengrep.sarif, coverage cobertura, trx/**)
 //   REPO_ROOT           default cwd (conformance scans this tree)
+//   TAMP_VERIFY         default 1; set 0 to skip the post-then-verify read-back
 
 static string Env(string k, string d = "") => Environment.GetEnvironmentVariable(k) is { Length: > 0 } v ? v : d;
 // Resolve an executable to its absolute path via PATH (avoids relying on PATH resolution at spawn time).
@@ -133,6 +135,9 @@ async Task<int> IngestAsync()
         FindingsCount = count, ToolName = tool, ToolVersion = ver,
     };
     var errors = 0;
+    // What this run posted successfully. Step 9 checks exactly these against the sink.
+    bool postedCoverage = false, postedTests = false;
+    ScanRunsIngestResponse? receiptsResp = null;
 
     // 1) SBOM — via Tamp.Ingest.V1 0.3.0 PostSbomAsync (tamp-ingest-v1#8 shipped SbomComponent.DevDependency
     // + the mapper classifier, retiring the former hand-rolled POST). The lic resolver runs first so license
@@ -204,7 +209,7 @@ async Task<int> IngestAsync()
     if (covPath is not null)
     {
         var (code, resp) = await PostFileRawAsync("/ingest/coverage/raw", covPath, "application/xml", extra: "&toolVersion=5.5.1");
-        if (code is 200 or 201) Console.WriteLine($"COVERAGE → {Trunc(resp)}");
+        if (code is 200 or 201) { Console.WriteLine($"COVERAGE → {Trunc(resp)}"); postedCoverage = true; }
         else { Console.Error.WriteLine($"COVERAGE ✗ {code} {Trunc(resp)}"); errors++; }
         receipts.Add(Receipt(ScannerKind.Coverlet, "reportgenerator", "5.5.1", 0));
     }
@@ -223,6 +228,7 @@ async Task<int> IngestAsync()
         }
         Console.WriteLine($"TESTS    → {ok}/{trx.Length} trx posted (replace-by-assembly)");
         if (bad > 0) errors++;
+        postedTests = ok > 0;
     }
     else Console.Error.WriteLine($"TESTS    ⚠ no trx under {trxDir}");
 
@@ -287,6 +293,7 @@ async Task<int> IngestAsync()
         }), "RECEIPTS");
         // Log what the sink STORED and which build it landed on, not just what we sent (TAM-293).
         Console.WriteLine($"RECEIPTS → {receipts.Count} posted, {rr.ReceiptsUpserted} upserted (componentVersion {rr.ComponentVersionId})");
+        receiptsResp = rr;
     }
     catch (Exception ex) { Console.Error.WriteLine($"RECEIPTS ✗ {Trunc(ex.Message)}"); errors++; }
 
@@ -300,8 +307,90 @@ async Task<int> IngestAsync()
     }
     catch (Exception ex) { Console.Error.WriteLine($"USAGE    ✗ {Trunc(ex.Message)}"); errors++; }
 
+    // 9) Post, then verify (ingest-v1#12 / TFND-265). Read the commit back and confirm that what this run
+    // posted actually landed, instead of trusting a 2xx. strata-home went four days without noticing
+    // their nightly never ingested (TAM-293). Opt out with TAMP_VERIFY=0.
+    if (Env("TAMP_VERIFY", "1") != "0")
+        try
+        {
+            var problems = await VerifyIngestAsync(ingest, started, sbomSnapshotId, postedCoverage, postedTests,
+                // Expect receipts only when their post succeeded. A failed post is already an error above.
+                receiptsResp is null ? Array.Empty<ScannerKind>() : receipts.Select(r => r.Scanner).ToList(), receiptsResp);
+            if (problems > 0) errors++;
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"VERIFY   ✗ {Trunc(ex.Message)}"); errors++; }
+    else Console.WriteLine("VERIFY   ⚠ skipped (TAMP_VERIFY=0)");
+
     Console.WriteLine(errors == 0 ? "\nIngest complete ✅" : $"\nIngest completed with {errors} error(s) ⚠");
     return errors == 0 ? 0 : 1;
+}
+
+// Read back what the sink holds for this commit and compare it with what this run posted. Each check is
+// "present AND ingested during this run". The nightly often rebuilds an unchanged commit, so presence
+// alone would pass on last night's data. Returns the number of failed checks.
+async Task<int> VerifyIngestAsync(
+    TampIngestClient ingest, DateTimeOffset runStarted, Guid? sbomSnapshotId, bool postedCoverage, bool postedTests,
+    IReadOnlyList<ScannerKind> postedScanners, ScanRunsIngestResponse? receiptsResp)
+{
+    // Runner and server clocks can disagree a little. Allow 5 minutes of skew before calling evidence stale.
+    var freshAfter = runStarted.AddMinutes(-5);
+    var ev = await RetryOnExAsync(() => ingest.ReadBuildEvidenceAsync(commit, project: project, client: client), "VERIFY");
+    if (ev is null)
+    {
+        Console.Error.WriteLine($"VERIFY   ✗ commit {Short(commit)} is not visible to this token: nothing landed, or the token is scoped elsewhere");
+        return 1;
+    }
+
+    // The nightly posts with no flavor and no pull-request ref, so its build is the plain one for this commit.
+    var b = ev.Builds.FirstOrDefault(x => x.Build.Flavor is null && x.Build.PullRequestRef is null);
+    if (b is null)
+    {
+        Console.Error.WriteLine($"VERIFY   ✗ commit {Short(commit)} has {ev.Builds.Count} build(s), none without a flavor/PR ref");
+        return 1;
+    }
+
+    var fails = new List<string>();
+    var oks = new List<string>();
+    void Check(bool ok, string pass, string fail) { if (ok) oks.Add(pass); else fails.Add(fail); }
+    string When(DateTimeOffset t) => t.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");
+
+    if (receiptsResp?.Build is { } echoed && echoed.ComponentVersionId != b.Build.ComponentVersionId)
+        fails.Add($"build mismatch: ingest landed on {echoed.ComponentVersionId}, read-back has {b.Build.ComponentVersionId}");
+
+    if (sbomSnapshotId is { } snap)
+        Check(b.Sbom?.SnapshotId == snap,
+            $"sbom {b.Sbom?.Components} components",
+            b.Sbom is null ? "sbom not stored" : $"sbom is snapshot {b.Sbom.SnapshotId}, this run posted {snap}");
+
+    if (postedCoverage)
+        Check(b.Coverage is { } c && c.IngestedAt >= freshAfter,
+            $"coverage {b.Coverage?.SequenceCoverage:0.#}% line",
+            b.Coverage is null ? "coverage not stored" : $"coverage is stale (ingested {When(b.Coverage.IngestedAt)})");
+
+    if (postedTests)
+        Check(b.TestResults is { } t && t.IngestedAt >= freshAfter,
+            $"tests {b.TestResults?.Passed}/{b.TestResults?.Total} passed",
+            b.TestResults is null ? "test results not stored" : $"test results are stale (ingested {When(b.TestResults.IngestedAt)})");
+
+    foreach (var s in postedScanners.Distinct())
+    {
+        var run = b.ScanRuns.FirstOrDefault(r => string.Equals(r.Scanner, s.ToString(), StringComparison.OrdinalIgnoreCase));
+        if (run is null) fails.Add($"scan-run receipt for {s} not stored");
+        else if (run.IngestedAt < freshAfter) fails.Add($"scan-run receipt for {s} is stale (ingested {When(run.IngestedAt)})");
+    }
+    if (postedScanners.Count > 0 && fails.All(f => !f.StartsWith("scan-run", StringComparison.Ordinal)))
+        oks.Add($"{postedScanners.Distinct().Count()} scan-run receipts");
+
+    var head = $"commit {Short(commit)} build {b.Build.ComponentVersionId.ToString()[..8]} ({b.Build.Branch ?? "?"})";
+    if (fails.Count == 0)
+    {
+        Console.WriteLine($"VERIFY   → {head}: {string.Join(", ", oks)} ✓ (all landed this run)");
+        return 0;
+    }
+    Console.Error.WriteLine($"VERIFY   ✗ {head}: {fails.Count} check(s) failed");
+    foreach (var f in fails) Console.Error.WriteLine($"  ✗ {f}");
+    if (oks.Count > 0) Console.Error.WriteLine($"  ✓ {string.Join(", ", oks)}");
+    return fails.Count;
 }
 
 // Quality + SAST lane (ADR 0006): emit BOTH sources — live SonarCloud fetch + local Roslyn/SonarAnalyzer
