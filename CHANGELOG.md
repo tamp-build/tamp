@@ -8,6 +8,8 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+## [1.17.6] — 2026-11-02 — `tamp init` scaffolds current Tamp; Windows shim fix
+
 ### Fixed
 
 - **`tamp init`'s `tamp.cmd` no longer prints a stray `'m' is not recognized` error on Windows** ([#120](https://github.com/tamp-build/tamp/issues/120)). The shim's C# raw string carried the line endings of whatever checkout the CLI was compiled from (LF on the ubuntu release runner) and the first `rem` line held a UTF-8 em dash; under console code page 437, cmd.exe misreads an LF-only batch file containing a multi-byte character and runs a fragment of a later line. The shim is now always emitted with CRLF line endings, whatever OS built the CLI, and is pure ASCII. `tamp.sh` is likewise pinned to LF. The `%~dp0` trailing-backslash trim (not the cause) was dropped and paths now join directly onto `%~dp0`, which always ends in `\`. **Existing repos keep their broken copy:** the shim is written with `SkipIfExists`, so delete `tamp.cmd` and re-run `tamp init` (or convert it to CRLF and replace the em dash by hand) to pick up the fix.
