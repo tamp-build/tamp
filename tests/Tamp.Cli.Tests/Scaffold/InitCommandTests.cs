@@ -14,6 +14,9 @@ public sealed class InitCommandTests : IDisposable
     private readonly StringWriter _stdout = new();
     private readonly StringWriter _stderr = new();
 
+    // No network in unit tests (#119): the version lookup sees a feed holding only this CLI's version.
+    private readonly FakeVersionFeed _feed = new(InitCommand.ResolveCliVersion());
+
     public InitCommandTests()
     {
         _root = Path.Combine(Path.GetTempPath(), "tamp-init-" + Guid.NewGuid().ToString("N"));
@@ -23,7 +26,7 @@ public sealed class InitCommandTests : IDisposable
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
     private int Run(params string[] args)
-        => InitCommand.Run([.. args, _root], _stdout, _stderr);
+        => InitCommand.Run([.. args, _root], _stdout, _stderr, _feed);
 
     [Fact]
     public void Bare_Init_In_Empty_Dir_Writes_Five_Files()
@@ -109,7 +112,7 @@ public sealed class InitCommandTests : IDisposable
     public void Init_Lists_Templates_With_List_Templates_Flag()
     {
         // List flag is informational; doesn't need a fabricated working dir to exist.
-        var exit = InitCommand.Run(["--list-templates"], _stdout, _stderr);
+        var exit = InitCommand.Run(["--list-templates"], _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitOk, exit);
 
         var stdout = _stdout.ToString();
@@ -129,7 +132,7 @@ public sealed class InitCommandTests : IDisposable
             ? new[] { flag, "x", _root }
             : new[] { flag, _root };
 
-        var exit = InitCommand.Run(args, _stdout, _stderr);
+        var exit = InitCommand.Run(args, _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitNotImplemented, exit);
 
         var stderr = _stderr.ToString();
@@ -147,7 +150,7 @@ public sealed class InitCommandTests : IDisposable
     {
         var exit = InitCommand.Run(
             new[] { "--template", templateName, _root },
-            _stdout, _stderr);
+            _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitOk, exit);
         var buildCs = System.IO.Path.Combine(_root, "build", "Build.cs");
         Assert.True(System.IO.File.Exists(buildCs));
@@ -156,7 +159,7 @@ public sealed class InitCommandTests : IDisposable
     [Fact]
     public void Template_Flag_Without_Value_Errors_With_Usage()
     {
-        var exit = InitCommand.Run(new[] { "--template" }, _stdout, _stderr);
+        var exit = InitCommand.Run(new[] { "--template" }, _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitUsage, exit);
         Assert.Contains("--template requires a name", _stderr.ToString());
     }
@@ -166,7 +169,7 @@ public sealed class InitCommandTests : IDisposable
     {
         var exit = InitCommand.Run(
             new[] { "--template", "unknown-template", _root },
-            _stdout, _stderr);
+            _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitTemplateNotFound, exit);
         Assert.Contains("no template named 'unknown-template'", _stderr.ToString());
     }
@@ -176,7 +179,7 @@ public sealed class InitCommandTests : IDisposable
     {
         var exit = InitCommand.Run(
             new[] { "--template", "library", _root },
-            _stdout, _stderr);
+            _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitOk, exit);
         var buildCs = System.IO.Path.Combine(_root, "build", "Build.cs");
         var content = System.IO.File.ReadAllText(buildCs);
@@ -190,7 +193,7 @@ public sealed class InitCommandTests : IDisposable
     {
         var exit = InitCommand.Run(
             new[] { "--template", "monorepo", _root },
-            _stdout, _stderr);
+            _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitOk, exit);
         var content = System.IO.File.ReadAllText(System.IO.Path.Combine(_root, "build", "Build.cs"));
         Assert.Contains("Target Test", content);
@@ -202,11 +205,11 @@ public sealed class InitCommandTests : IDisposable
     public void Force_Flag_Overwrites_Existing_BuildCs()
     {
         // First run — succeeds.
-        var first = InitCommand.Run(new[] { _root }, _stdout, _stderr);
+        var first = InitCommand.Run(new[] { _root }, _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitOk, first);
 
         // Second run without --force — refused.
-        var refused = InitCommand.Run(new[] { _root }, _stdout, _stderr);
+        var refused = InitCommand.Run(new[] { _root }, _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitFileExists, refused);
         Assert.Contains("already exists", _stderr.ToString());
 
@@ -217,7 +220,7 @@ public sealed class InitCommandTests : IDisposable
         // we used a different template.
         var forced = InitCommand.Run(
             new[] { "--template", "library", "--force", _root },
-            _stdout, _stderr);
+            _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitOk, forced);
 
         var content = System.IO.File.ReadAllText(System.IO.Path.Combine(_root, "build", "Build.cs"));
@@ -227,10 +230,10 @@ public sealed class InitCommandTests : IDisposable
     [Fact]
     public void Force_Flag_Result_Reports_Overwrote_Distinct_From_Wrote()
     {
-        InitCommand.Run(new[] { _root }, _stdout, _stderr);
+        InitCommand.Run(new[] { _root }, _stdout, _stderr, _feed);
         _stdout.GetStringBuilder().Clear();
 
-        var exit = InitCommand.Run(new[] { "--force", _root }, _stdout, _stderr);
+        var exit = InitCommand.Run(new[] { "--force", _root }, _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitOk, exit);
         Assert.Contains("overwrote", _stdout.ToString());
     }
@@ -238,7 +241,7 @@ public sealed class InitCommandTests : IDisposable
     [Fact]
     public void ListTemplates_Surface_Includes_All_Three_Embedded()
     {
-        var exit = InitCommand.Run(new[] { "--list-templates" }, _stdout, _stderr);
+        var exit = InitCommand.Run(new[] { "--list-templates" }, _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitOk, exit);
         var stdout = _stdout.ToString();
         Assert.Contains("minimal", stdout);
@@ -269,7 +272,7 @@ public sealed class InitCommandTests : IDisposable
     {
         var exit = InitCommand.Run(
             new[] { "--template", template, "--settings-style", "init", _root },
-            _stdout, _stderr);
+            _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitOk, exit);
         var buildCs = File.ReadAllText(Path.Combine(_root, "build", "Build.cs"));
 
@@ -294,7 +297,7 @@ public sealed class InitCommandTests : IDisposable
     {
         var exit = InitCommand.Run(
             new[] { "--settings-style", supplied, _root },
-            _stdout, _stderr);
+            _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitOk, exit);
 
         var buildCs = File.ReadAllText(Path.Combine(_root, "build", "Build.cs"));
@@ -307,7 +310,7 @@ public sealed class InitCommandTests : IDisposable
     [Fact]
     public void Settings_Style_Flag_Without_Value_Errors_With_Usage()
     {
-        var exit = InitCommand.Run(new[] { "--settings-style" }, _stdout, _stderr);
+        var exit = InitCommand.Run(new[] { "--settings-style" }, _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitUsage, exit);
         Assert.Contains("--settings-style requires a value", _stderr.ToString());
     }
@@ -315,7 +318,7 @@ public sealed class InitCommandTests : IDisposable
     [Fact]
     public void Settings_Style_Rejects_Unknown_Value()
     {
-        var exit = InitCommand.Run(new[] { "--settings-style", "wat", _root }, _stdout, _stderr);
+        var exit = InitCommand.Run(new[] { "--settings-style", "wat", _root }, _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitUsage, exit);
         Assert.Contains("--settings-style: unknown value 'wat'", _stderr.ToString());
     }
@@ -325,7 +328,7 @@ public sealed class InitCommandTests : IDisposable
     {
         var exit = InitCommand.Run(
             new[] { "--template", "library", "--settings-style", "init", _root },
-            _stdout, _stderr);
+            _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitOk, exit);
         var buildCs = File.ReadAllText(Path.Combine(_root, "build", "Build.cs"));
         Assert.Contains("new DotNetPackSettings", buildCs);
@@ -335,7 +338,7 @@ public sealed class InitCommandTests : IDisposable
     [Fact]
     public void Help_Mentions_Settings_Style_Flag()
     {
-        var exit = InitCommand.Run(new[] { "--help" }, _stdout, _stderr);
+        var exit = InitCommand.Run(new[] { "--help" }, _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitOk, exit);
         var help = _stdout.ToString();
         Assert.Contains("--settings-style", help);
@@ -345,7 +348,7 @@ public sealed class InitCommandTests : IDisposable
     [Fact]
     public void Unknown_Flag_Exits_Usage_With_Help()
     {
-        var exit = InitCommand.Run(["--made-up-flag", _root], _stdout, _stderr);
+        var exit = InitCommand.Run(["--made-up-flag", _root], _stdout, _stderr, _feed);
         Assert.Equal(InitCommand.ExitUsage, exit);
         Assert.Contains("unknown flag", _stderr.ToString());
         Assert.Contains("tamp init —", _stderr.ToString());           // help text follows

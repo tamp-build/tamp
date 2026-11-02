@@ -43,8 +43,9 @@ public sealed record ScaffoldContext
 
     /// <summary>
     /// Tamp.* package version templates should pin in generated project files.
-    /// The CLI fills this from its own assembly version at runtime; tests
-    /// override it directly.
+    /// The CLI fills this with the newest stable Tamp.Core on NuGet (never older
+    /// than the CLI), an explicit <c>--tamp-version</c>, or the CLI's own version
+    /// when the feed can't be reached; tests override it directly.
     /// </summary>
     public required string TampCoreVersion { get; init; }
 

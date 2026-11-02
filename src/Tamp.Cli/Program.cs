@@ -92,6 +92,14 @@ internal static class Program
                 return ExitDispatchFailed;
             }
             process.WaitForExit();
+            if (process.ExitCode != 0
+                && RestoreDowngradeDiagnostic.TryDescribe(buildProject) is { } diagnostic)
+            {
+                // #119: a satellite built against a newer Tamp.Core fails restore with NU1605.
+                // Say which package needs which version, instead of leaving raw NuGet output.
+                Console.Error.WriteLine();
+                Console.Error.WriteLine(diagnostic);
+            }
             return process.ExitCode;
         }
         catch (Exception ex)

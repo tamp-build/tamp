@@ -34,6 +34,11 @@ internal sealed class BuildProjectInvoker : IBuildInvoker
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
         process.WaitForExit();
-        return (process.ExitCode, stdout.GetAwaiter().GetResult(), stderr.GetAwaiter().GetResult());
+        var stdoutText = stdout.GetAwaiter().GetResult();
+        var stderrText = stderr.GetAwaiter().GetResult();
+        if (process.ExitCode != 0
+            && RestoreDowngradeDiagnostic.TryDescribe(_buildProject, stdoutText + "\n" + stderrText) is { } diagnostic)
+            stderrText += Environment.NewLine + diagnostic + Environment.NewLine;   // #119
+        return (process.ExitCode, stdoutText, stderrText);
     }
 }
