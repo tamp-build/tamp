@@ -64,6 +64,77 @@ public sealed class MinimalTemplateTests
         Assert.Contains("setlocal", rendered);
     }
 
+    // tamp#120: cmd.exe misparses LF-only batch files (worst under OEM code
+    // pages like 437 with multi-byte characters present), running a fragment
+    // of a later line ("'m' is not recognized"). The shim must be CRLF and
+    // pure ASCII no matter which OS / checkout the CLI was compiled on.
+    [Fact]
+    public void Tamp_Cmd_Shim_Uses_Crlf_Line_Endings_Only()
+    {
+        var rendered = MinimalTemplate.RenderTampCmd();
+        Assert.Contains("\r\n", rendered);
+        for (var i = 0; i < rendered.Length; i++)
+        {
+            if (rendered[i] == '\n')
+                Assert.True(i > 0 && rendered[i - 1] == '\r', $"bare LF at index {i}");
+            if (rendered[i] == '\r')
+                Assert.True(i + 1 < rendered.Length && rendered[i + 1] == '\n', $"bare CR at index {i}");
+        }
+        Assert.EndsWith("\r\n", rendered);
+    }
+
+    [Fact]
+    public void Tamp_Cmd_Shim_Is_Pure_Ascii()
+    {
+        var rendered = MinimalTemplate.RenderTampCmd();
+        for (var i = 0; i < rendered.Length; i++)
+            Assert.True(rendered[i] < 0x80, $"non-ASCII U+{(int)rendered[i]:X4} at index {i}");
+    }
+
+    [Fact]
+    public void Tamp_Cmd_Shim_Joins_Onto_Dp0_Without_Trim()
+    {
+        // %~dp0 always ends in '\', so paths join directly onto it.
+        var rendered = MinimalTemplate.RenderTampCmd();
+        Assert.Contains("set \"SCRIPT_DIR=%~dp0\"", rendered);
+        Assert.Contains("%SCRIPT_DIR%.config\\dotnet-tools.json", rendered);
+        Assert.DoesNotContain("%SCRIPT_DIR:~", rendered);
+        Assert.DoesNotContain("%SCRIPT_DIR%\\", rendered);
+    }
+
+    [Fact]
+    public void Tamp_Sh_Shim_Uses_Lf_Line_Endings_Only()
+    {
+        // Mirror of the .cmd guard: a CRLF tamp.sh breaks bash ("$'\r': command not found").
+        Assert.DoesNotContain("\r", MinimalTemplate.RenderTampSh());
+    }
+
+    [Fact]
+    public void Shims_Land_On_Disk_With_Their_Line_Endings_Through_The_Runner()
+    {
+        var root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "tamp-shim-" + System.Guid.NewGuid().ToString("N"));
+        try
+        {
+            var specs = new MinimalTemplate().Render(FakeContext(AbsolutePath.Create(root)))
+                .Where(s => s.Path.Value.EndsWith("tamp.cmd") || s.Path.Value.EndsWith("tamp.sh"))
+                .ToList();
+            new Tamp.Cli.Scaffold.ScaffoldRunner().Run(specs);
+
+            var cmd = System.IO.File.ReadAllBytes(System.IO.Path.Combine(root, "tamp.cmd"));
+            var sh = System.IO.File.ReadAllBytes(System.IO.Path.Combine(root, "tamp.sh"));
+
+            Assert.All(cmd, b => Assert.True(b < 0x80, $"non-ASCII byte 0x{b:X2} in tamp.cmd"));
+            for (var i = 0; i < cmd.Length; i++)
+                if (cmd[i] == (byte)'\n') Assert.True(i > 0 && cmd[i - 1] == (byte)'\r', $"bare LF in tamp.cmd at byte {i}");
+            Assert.DoesNotContain((byte)'\r', sh);
+            Assert.Contains((byte)'\n', sh);
+        }
+        finally
+        {
+            try { System.IO.Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
     [Fact]
     public void Build_Cs_Snapshot_Pins_The_1_3_Surface()
     {
