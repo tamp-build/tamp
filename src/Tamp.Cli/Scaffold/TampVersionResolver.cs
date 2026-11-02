@@ -115,10 +115,14 @@ internal static class TampVersionResolver
     // SemVer 2.0 core with optional prerelease / build metadata. Leading 'v' is not accepted.
     private static readonly Regex SemVerPattern = new(
         @"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$",
-        RegexOptions.CultureInvariant);
+        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>True if <paramref name="value"/> is a valid SemVer 2.0 version (e.g. <c>1.17.5</c> or <c>1.18.0-rc.1</c>).</summary>
-    public static bool IsValidVersion(string value) => SemVerPattern.IsMatch(value);
+    public static bool IsValidVersion(string value)
+    {
+        try { return SemVerPattern.IsMatch(value); }
+        catch (RegexMatchTimeoutException) { return false; }
+    }
 
     /// <summary>
     /// Resolve the version to scaffold. Never throws for feed problems: any

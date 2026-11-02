@@ -27,14 +27,18 @@ internal static class RestoreDowngradeDiagnostic
     /// <summary>Packages released together from this repo's single version (RELEASING.md); fix them as a set.</summary>
     private static readonly string[] CorePackages = ["Tamp.Core", "Tamp.NetCli.V10"];
 
+    // Bounded so a pathological log line can't stall the CLI (Sonar S6444); a timeout makes
+    // TryDescribe return null instead of a diagnostic.
+    private static readonly TimeSpan MatchTimeout = TimeSpan.FromSeconds(1);
+
     private static readonly Regex Header = new(
         @"Detected package downgrade:\s*(?<pkg>[^\s]+)\s+from\s+(?<from>[^\s]+)\s+to\s+(?<to>[^\s.]+(?:\.[^\s.]+)*?)\.?(?=\s|$)",
-        RegexOptions.CultureInvariant);
+        RegexOptions.CultureInvariant, MatchTimeout);
 
     // "<chain> -> <PackageId> <version> -> <Package> (>= <version>)" — the element just before the last arrow.
     private static readonly Regex Path = new(
         @"->\s*(?<by>[^\s>]+)\s+(?<byver>[^\s>]+)\s*->\s*(?<pkg>[^\s(]+)\s*\(\s*>=\s*(?<ver>[^)\s]+)\s*\)",
-        RegexOptions.CultureInvariant);
+        RegexOptions.CultureInvariant, MatchTimeout);
 
     /// <summary>
     /// Extract every NU1605 downgrade from <paramref name="text"/>. Tolerates the
