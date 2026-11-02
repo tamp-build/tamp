@@ -27,6 +27,15 @@ public static class InitCommand
     /// Parse <c>tamp init ...</c> args and run. Returns the process exit code.
     /// </summary>
     public static int Run(string[] args, TextWriter? stdout = null, TextWriter? stderr = null)
+        => Run(args, stdout, stderr, versionFeed: null);
+
+    /// <summary>
+    /// Test seam: <paramref name="versionFeed"/> replaces the NuGet lookup that picks the
+    /// scaffolded Tamp version (#119). Null means the real feed
+    /// (<see cref="NuGetFlatContainerVersionFeed.FromEnvironment"/>).
+    /// </summary>
+    internal static int Run(string[] args, TextWriter? stdout, TextWriter? stderr, ITampVersionFeed? versionFeed,
+                            TimeSpan? versionLookupTimeout = null)
     {
         stdout ??= Console.Out;
         stderr ??= Console.Error;
@@ -42,10 +51,14 @@ public static class InitCommand
 
         if (opts.Help) { PrintHelp(stdout); return ExitOk; }
 
-        return RunAsync(opts, stdout, stderr, CancellationToken.None).GetAwaiter().GetResult();
+        var feed = versionFeed ?? NuGetFlatContainerVersionFeed.FromEnvironment();
+        var timeout = versionLookupTimeout ?? TampVersionResolver.DefaultTimeout;
+        return RunAsync(opts, stdout, stderr, feed, timeout, CancellationToken.None).GetAwaiter().GetResult();
     }
 
-    private static async Task<int> RunAsync(InitOptions opts, TextWriter stdout, TextWriter stderr, CancellationToken ct)
+    private static async Task<int> RunAsync(InitOptions opts, TextWriter stdout, TextWriter stderr,
+                                            ITampVersionFeed versionFeed, TimeSpan versionLookupTimeout,
+                                            CancellationToken ct)
     {
         var repoRoot = AbsolutePath.Create(opts.WorkingDirectory ?? Environment.CurrentDirectory);
 
@@ -67,24 +80,12 @@ public static class InitCommand
             return ExitNotImplemented;
         }
 
-        // Probe.
-        var probes = new IRepoProbe[] { new DotnetSolutionProbe() };
-        var ctxBuilder = new ScaffoldContextBuilder
+        // Pre-flight refusal: if Build.cs already exists AND --force is not set, refuse
+        // (before any network lookup).
+        var buildCsAlreadyPresent = File.Exists(Path.Combine(repoRoot.Value, "build", "Build.cs"));
+        if (buildCsAlreadyPresent && !opts.Force)
         {
-            RepoRoot = repoRoot,
-            TampCoreVersion = ResolveCliVersion(),
-        };
-        ctxBuilder.DotnetToolsJsonExists = File.Exists(Path.Combine(repoRoot.Value, ".config", "dotnet-tools.json"));
-        ctxBuilder.BuildCsAlreadyPresent = File.Exists(Path.Combine(repoRoot.Value, "build", "Build.cs"));
-        ctxBuilder.SettingsStyle = opts.SettingsStyle;
-        if (opts.SolutionOverride is not null) ctxBuilder.Solution = opts.SolutionOverride;
-        else foreach (var p in probes) p.Probe(repoRoot, ctxBuilder);
-        var ctx = ctxBuilder.Build();
-
-        // Pre-flight refusal: if Build.cs already exists AND --force is not set, refuse.
-        if (ctx.BuildCsAlreadyPresent && !opts.Force)
-        {
-            stderr.WriteLine($"tamp init: build/Build.cs already exists at '{ctx.RepoRoot.Value}'. " +
+            stderr.WriteLine($"tamp init: build/Build.cs already exists at '{repoRoot.Value}'. " +
                              "Pass --force to overwrite.");
             return ExitFileExists;
         }
@@ -104,15 +105,39 @@ public static class InitCommand
             return ExitTemplateNotFound;
         }
 
+        // Version to pin (#119): newest stable Tamp on the feed (never older than this CLI),
+        // or --tamp-version, or this CLI's own version when the feed can't be reached.
+        var cliVersion = ResolveCliVersion();
+        var resolution = await TampVersionResolver.ResolveAsync(
+            cliVersion, opts.TampVersion, versionFeed, versionLookupTimeout, ct);
+
+        // Probe.
+        var probes = new IRepoProbe[] { new DotnetSolutionProbe() };
+        var ctxBuilder = new ScaffoldContextBuilder
+        {
+            RepoRoot = repoRoot,
+            TampCoreVersion = resolution.Version,
+        };
+        ctxBuilder.DotnetToolsJsonExists = File.Exists(Path.Combine(repoRoot.Value, ".config", "dotnet-tools.json"));
+        ctxBuilder.BuildCsAlreadyPresent = buildCsAlreadyPresent;
+        ctxBuilder.SettingsStyle = opts.SettingsStyle;
+        if (opts.SolutionOverride is not null) ctxBuilder.Solution = opts.SolutionOverride;
+        else foreach (var p in probes) p.Probe(repoRoot, ctxBuilder);
+        var ctx = ctxBuilder.Build();
+
         // Drift check.
         if (!TampCoreVersionIsAtLeast(ctx.TampCoreVersion, template.MinimumTampCoreVersion))
         {
             stderr.WriteLine(
                 $"tamp init: template '{template.Name}' requires Tamp.Core >= {template.MinimumTampCoreVersion}; " +
-                $"this CLI ships {ctx.TampCoreVersion}. " +
-                "Upgrade: `dotnet tool update -g dotnet-tamp`.");
+                $"the scaffold would pin {ctx.TampCoreVersion}. " +
+                (resolution.Source == TampVersionSource.Flag
+                    ? $"Pass --tamp-version {template.MinimumTampCoreVersion} or newer."
+                    : "Upgrade: `dotnet tool update -g dotnet-tamp`."));
             return ExitDriftMismatch;
         }
+
+        ReportVersion(resolution, cliVersion, ctx.DotnetToolsJsonExists, stdout);
 
         // Report probe diagnostics (informational; doesn't fail the run).
         if (ctx.ProbeData.TryGetValue("dotnet.solution.detection", out var msg))
@@ -163,6 +188,37 @@ public static class InitCommand
         }
 
         return ExitOk;
+    }
+
+    /// <summary>
+    /// Say which Tamp version the scaffold pins and where it came from (#119), plus a
+    /// one-line note when the feed couldn't be checked or the running CLI is older.
+    /// </summary>
+    internal static void ReportVersion(TampVersionResolution r, string cliVersion, bool toolsJsonExists, TextWriter stdout)
+    {
+        var origin = r.Source switch
+        {
+            TampVersionSource.Flag => "pinned with --tamp-version",
+            TampVersionSource.Feed => $"latest stable Tamp.Core on {r.FeedName}",
+            _ when r.FailureReason is null => $"this CLI's version; nothing newer on {r.FeedName}",
+            _ => "this CLI's version",
+        };
+        stdout.WriteLine($"Tamp {r.Version} ({origin}) → Tamp.Core, Tamp.NetCli.V10" +
+                         (toolsJsonExists ? "" : ", dotnet-tamp"));
+
+        if (r.FailureReason is not null)
+            stdout.WriteLine($"  note: couldn't check {r.FeedName} for a newer Tamp ({r.FailureReason}); " +
+                             $"{r.Version} may be stale. Pass --tamp-version <x> to pin one explicitly.");
+
+        if (toolsJsonExists)
+            stdout.WriteLine($"  note: .config/dotnet-tools.json already exists and is left as-is; " +
+                             $"keep its dotnet-tamp pin at {r.Version} to match.");
+
+        if (!TampCoreVersionIsAtLeast(cliVersion, r.Version) && TampCoreVersionIsAtLeast(r.Version, cliVersion))
+            stdout.WriteLine($"  note: this CLI is {cliVersion}; the project pins {r.Version}. " +
+                             (toolsJsonExists ? "" : "The local tool manifest covers the project — ") +
+                             "to update your global tool too: `dotnet tool update -g dotnet-tamp`.");
+        stdout.WriteLine();
     }
 
     private static async Task ListTemplatesAsync(IReadOnlyList<IScaffoldTemplateSource> sources, TextWriter stdout, CancellationToken ct)
@@ -217,6 +273,12 @@ public static class InitCommand
                 case "--force":
                     opts.Force = true;
                     break;
+                case "--tamp-version":
+                    if (++i >= args.Length) { error = "--tamp-version requires a version (e.g. 1.17.5)."; return opts; }
+                    if (!TampVersionResolver.IsValidVersion(args[i]))
+                    { error = $"--tamp-version: '{args[i]}' is not a valid version (expected e.g. 1.17.5)."; return opts; }
+                    opts.TampVersion = args[i];
+                    break;
                 case "--with-ci":
                     opts.UnsupportedFlag = (a, "0.3.0"); if (++i < args.Length) { /* consume value */ }
                     break;
@@ -235,10 +297,9 @@ public static class InitCommand
     }
 
     /// <summary>
-    /// The CLI's own assembly version becomes the Tamp.Core / Tamp.NetCli.V10
-    /// pin in the generated Build.csproj. Single source of truth — no chance
-    /// of the CLI shipping templates that point at a Core version different
-    /// from the one shipping in the same release.
+    /// The CLI's own assembly version. It is the floor for the scaffolded Tamp
+    /// version and the fallback when the feed can't be reached (#119); the
+    /// normal pin is the newest stable Tamp.Core on the feed.
     /// </summary>
     internal static string ResolveCliVersion()
     {
@@ -276,7 +337,7 @@ public static class InitCommand
         w.WriteLine("tamp init — scaffold a Tamp build script into the current directory");
         w.WriteLine();
         w.WriteLine("USAGE:");
-        w.WriteLine("  tamp init [--template <name>] [--solution <path>] [--dry-run] [--force] [--list-templates]");
+        w.WriteLine("  tamp init [--template <name>] [--solution <path>] [--tamp-version <x>] [--dry-run] [--force] [--list-templates]");
         w.WriteLine();
         w.WriteLine("TEMPLATES (embedded — offline-safe):");
         w.WriteLine("  minimal     Clean / Restore / Compile / Test (default)");
@@ -286,6 +347,8 @@ public static class InitCommand
         w.WriteLine("WHAT IT WRITES (any template):");
         w.WriteLine("  build/Build.cs               build script (shape varies by template)");
         w.WriteLine("  build/Build.csproj           pins Tamp.Core + Tamp.NetCli.V10");
+        w.WriteLine("  (all Tamp pins use one version: the newest stable Tamp.Core on NuGet, never older");
+        w.WriteLine("   than this CLI; this CLI's own version if NuGet can't be reached within 5s)");
         w.WriteLine("  .config/dotnet-tools.json    registers dotnet-tamp as a local tool (if absent)");
         w.WriteLine("  tamp.sh + tamp.cmd           shims that `dotnet tool restore` on first run");
         w.WriteLine();
@@ -295,6 +358,8 @@ public static class InitCommand
         w.WriteLine("                              fluent (default) → DotNet.Build(s => s.SetProject(...))");
         w.WriteLine("                              init             → DotNet.Build(new() { Project = ... })");
         w.WriteLine("  --solution <path>          Explicit .NET solution path (otherwise auto-detected)");
+        w.WriteLine("  --tamp-version <x>         Pin this Tamp version (Tamp.Core, Tamp.NetCli.V10, dotnet-tamp);");
+        w.WriteLine("                              skips the NuGet lookup");
         w.WriteLine("  --dry-run                  Print would-write list; touch nothing");
         w.WriteLine("  --force                    Overwrite existing files");
         w.WriteLine("  --list-templates           List templates from all registered sources");
@@ -305,6 +370,10 @@ public static class InitCommand
         w.WriteLine("  --offline                  (0.3.0)  Refuse network fallback");
         w.WriteLine("  --with-ci <vendor>         (0.3.0)  Emit CI workflow files");
         w.WriteLine("  --interactive              (0.4.0)  Prompt for choices");
+        w.WriteLine();
+        w.WriteLine("ENVIRONMENT:");
+        w.WriteLine($"  {NuGetFlatContainerVersionFeed.FeedUrlEnvironmentVariable}   NuGet v3 flat-container base URL for the version lookup");
+        w.WriteLine($"                       (default {NuGetFlatContainerVersionFeed.DefaultBaseUrl})");
     }
 
     /// <summary>Parsed flag state.</summary>
@@ -318,6 +387,7 @@ public static class InitCommand
         public string? TemplateName;
         public AbsolutePath? SolutionOverride;
         public SettingsStyle SettingsStyle = SettingsStyle.Fluent;
+        public string? TampVersion;
         public (string Flag, string Version)? UnsupportedFlag;
     }
 }
