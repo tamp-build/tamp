@@ -79,6 +79,8 @@ public sealed record BuildEvent
 [JsonDerivedType(typeof(ArtifactProducedPayload), BuildEventTypes.ArtifactProduced)]
 [JsonDerivedType(typeof(GateEvaluatedPayload), BuildEventTypes.GateEvaluated)]
 [JsonDerivedType(typeof(ConformanceEvaluatedPayload), BuildEventTypes.ConformanceEvaluated)]
+[JsonDerivedType(typeof(ServiceReadyPayload), BuildEventTypes.ServiceReady)]
+[JsonDerivedType(typeof(ServiceStoppedPayload), BuildEventTypes.ServiceStopped)]
 public abstract record BuildEventPayload;
 
 /// <summary><see cref="BuildEventTypes.BuildStarted"/> — emitted once at the top of a run.</summary>
@@ -340,4 +342,55 @@ public sealed record ConformanceEvaluatedPayload : BuildEventPayload
 
     /// <summary>The binary mandate id this verdict is evidence for (e.g. <c>mfa</c>). Set instead of the zt-trio for a mandate verdict; null otherwise.</summary>
     public string? MandateId { get; init; }
+}
+
+// ── Long-running services (#124). A target that starts a service (a dev server, an emulator, a compose stack)
+// reports when it is usable and when, and why, it stopped. The service's process is still announced with
+// tool.invoked / tool.exited; these events can share that command span (see BuildEvents.ServiceReady).
+
+/// <summary>
+/// <see cref="BuildEventTypes.ServiceReady"/>: a service a target started has passed its readiness check and can be
+/// used. Carries where it is and which process serves it; never credentials or session state.
+/// </summary>
+public sealed record ServiceReadyPayload : BuildEventPayload
+{
+    /// <summary>What kind of service, as the producing wrapper names it (e.g. <c>heft-dev-server</c>).</summary>
+    public required string Kind { get; init; }
+
+    /// <summary>Where to reach it, e.g. <c>https://localhost:4321/</c>.</summary>
+    public required string Url { get; init; }
+
+    /// <summary>The listening port, when it has one.</summary>
+    public int? Port { get; init; }
+
+    /// <summary>PID of the root process serving it, when it runs locally.</summary>
+    public int? Pid { get; init; }
+
+    /// <summary>When that process started (UTC); with <see cref="Pid"/> it identifies the process even if the PID is later reused.</summary>
+    public DateTimeOffset? ProcessStartTime { get; init; }
+
+    /// <summary>The URL or check that answered the readiness probe, when it differs from <see cref="Url"/>.</summary>
+    public string? ReadinessProbe { get; init; }
+
+    /// <summary>A state file describing the running service for readers outside the build, when one is written.</summary>
+    public string? StatePath { get; init; }
+}
+
+/// <summary><see cref="BuildEventTypes.ServiceStopped"/>: a service stopped, whether or not it had become ready.</summary>
+public sealed record ServiceStoppedPayload : BuildEventPayload
+{
+    /// <summary>Same as <see cref="ServiceReadyPayload.Kind"/>.</summary>
+    public required string Kind { get; init; }
+
+    /// <summary>One of <see cref="ServiceStopReason"/>: requested | signal | exited | timeout.</summary>
+    public required string Reason { get; init; }
+
+    /// <summary>PID of the root process, when it ran locally.</summary>
+    public int? Pid { get; init; }
+
+    /// <summary>The process's exit code, when known. Non-zero after a deliberate kill; read <see cref="Reason"/> instead.</summary>
+    public int? ExitCode { get; init; }
+
+    /// <summary>How long the service ran, from start to stop.</summary>
+    public double? DurationMs { get; init; }
 }

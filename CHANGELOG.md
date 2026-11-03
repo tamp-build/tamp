@@ -8,6 +8,10 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+### Added
+
+- **`service.ready` / `service.stopped` events for long-running services** ([#124](https://github.com/tamp-build/tamp/issues/124)). A target that starts a dev server, emulator or other long-running process can now say when it is usable (`kind`, `url`, optional `port`, `pid`, `processStartTime`, `readinessProbe`, `statePath`) and when and why it stopped (`reason`: `requested` | `signal` | `exited` | `timeout`, plus optional `pid`, `exitCode`, `durationMs`). The reason lets consumers tell a deliberate shutdown from a failure: a killed service reports a non-zero `tool.exited` code even when nothing went wrong. Emitted with `BuildEvents.ServiceReady(...)` / `BuildEvents.ServiceStopped(...)`, which can share the service's `tool.invoked` command span; `url` and `readinessProbe` are scrubbed through the redaction table. Additive: the schema version stays `1.0`. See [docs/agent-first.md](docs/agent-first.md#long-running-services).
+
 ## [1.17.6] — 2026-11-02 — `tamp init` scaffolds current Tamp; Windows shim fix
 
 ### Fixed

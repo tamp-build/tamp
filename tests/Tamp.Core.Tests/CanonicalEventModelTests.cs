@@ -161,6 +161,7 @@ public sealed class CanonicalEventModelTests
             "tool.invoked", "tool.exited", "secret.access.requested",
             "diagnostic.emitted", "artifact.produced", "gate.evaluated",
             "conformance.evaluated",
+            "service.ready", "service.stopped",
         }, BuildEventSchema.Types);
         Assert.Equal("1.0", BuildEventSchema.Version);   // additive change keeps the schema version
     }
