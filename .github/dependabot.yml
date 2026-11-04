@@ -1,0 +1,16 @@
+# Keeps the SHA-pinned actions current (#135). Every `uses:` is pinned to a commit with its
+# version in a trailing comment; Dependabot bumps the SHA and that comment together, so an
+# update is a reviewable one-line diff instead of a mutable tag moving underneath us.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # One PR per week for all action bumps, not one per action.
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

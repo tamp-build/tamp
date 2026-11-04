@@ -65,12 +65,24 @@ public static class OsSecretStore
 /// </summary>
 internal sealed class MacOsKeychainStore : IOsSecretStore
 {
+    /// <summary>Where macOS always ships the <c>security</c> CLI.</summary>
+    internal const string SecurityPath = "/usr/bin/security";
+
+    private readonly ExecutableLocator _locator;
+
+    public MacOsKeychainStore(ExecutableLocator? locator = null) => _locator = locator ?? ExecutableLocator.Current;
+
     public string? TryGet(string name)
     {
+        // This process is handed the secret, so it must be the system binary: the known location first,
+        // and never a `security` found relative to, or inside, the working directory.
+        var security = _locator.Resolve("security", null, SecurityPath);
+        if (security is null) return null;
+
         // security find-generic-password -s tamp -a <name> -w
         // -w prints just the password value to stdout.
         // Exit non-zero when the entry isn't found.
-        var psi = new ProcessStartInfo("security")
+        var psi = new ProcessStartInfo(security)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -109,12 +121,21 @@ internal sealed class MacOsKeychainStore : IOsSecretStore
 /// </summary>
 internal sealed class LinuxSecretToolStore : IOsSecretStore
 {
+    private readonly ExecutableLocator _locator;
+
+    public LinuxSecretToolStore(ExecutableLocator? locator = null) => _locator = locator ?? ExecutableLocator.Current;
+
     public string? TryGet(string name)
     {
+        // Not installed (or only reachable through a relative / working-directory PATH entry, which is
+        // refused: this process is handed the secret) is the normal "no OS store" leg: null, not a crash.
+        var secretTool = _locator.Resolve("secret-tool");
+        if (secretTool is null) return null;
+
         // secret-tool lookup service tamp account <name>
         // Exit 0 with the value on stdout when found; exit 1 (no output) when not found;
         // exit 127 / "command not found" when libsecret-tools isn't installed.
-        var psi = new ProcessStartInfo("secret-tool")
+        var psi = new ProcessStartInfo(secretTool)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
