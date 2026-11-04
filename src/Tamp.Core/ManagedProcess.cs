@@ -255,6 +255,8 @@ public sealed class ManagedProcess : IAsyncDisposable, IDisposable
         if (SafeHasExited()) throw ExitedBeforeReady();
 
         _ready = true;
+        // An exit between the last check and _ready = true was ignored by OnExited; report it now.
+        if (SafeHasExited()) throw ExitedBeforeReady();
         if (_events is { } ev && _span is { } span)
             ev.Emit(BuildEventTypes.ServiceReady, span, new ServiceReadyPayload
             {
@@ -318,14 +320,10 @@ public sealed class ManagedProcess : IAsyncDisposable, IDisposable
     // The process exited on its own (not because we stopped it).
     private void OnExited()
     {
-        if (IsStopping) return;
+        // Still starting: the readiness loop sees the exit and StartAsync stops with reason exited. Never touch the
+        // stop flag here then, or a concurrent Stop() would wait on a stop nobody performs.
+        if (!_ready) return;
         if (Interlocked.Exchange(ref _stopping, 1) == 1) return;
-        if (!_ready)
-        {
-            // Still starting: the readiness loop reports it (and StartAsync stops with reason exited).
-            Volatile.Write(ref _stopping, 0);
-            return;
-        }
         Finish(ServiceStopReason.Exited);
     }
 
