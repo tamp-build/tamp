@@ -91,6 +91,8 @@ public sealed class ManagedProcess : IAsyncDisposable, IDisposable
     private readonly object _ioLock = new();
     private readonly Queue<string> _tail = new();
     private readonly ManualResetEventSlim _finished = new();
+    // Completes with _finished, for WaitForExitAsync without parking a thread-pool thread.
+    private readonly TaskCompletionSource _exited = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TextWriter _output;
     private readonly BuildInterrupt? _interrupt;
     private CancellationTokenRegistration _onBuildCancelled;
@@ -182,7 +184,7 @@ public sealed class ManagedProcess : IAsyncDisposable, IDisposable
 
     /// <summary>Completes when the process has exited and its stop has been recorded.</summary>
     public Task WaitForExitAsync(CancellationToken cancellationToken = default) =>
-        Task.Run(() => _finished.Wait(cancellationToken), cancellationToken);
+        _exited.Task.WaitAsync(cancellationToken);
 
     /// <summary>
     /// Start <paramref name="plan"/> and wait until <see cref="ManagedProcessOptions.Readiness"/> passes. Honours the
@@ -363,6 +365,7 @@ public sealed class ManagedProcess : IAsyncDisposable, IDisposable
             _options.Readiness?.Dispose();
             _process.Dispose();
             _finished.Set();
+            _exited.TrySetResult();
         }
     }
 
