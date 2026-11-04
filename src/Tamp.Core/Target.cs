@@ -319,6 +319,22 @@ public interface ITargetDefinition
 
     /// <summary>Async sibling of <see cref="Executes(Func{IEnumerable{CommandPlan}})"/>.</summary>
     ITargetDefinition Executes(Func<Task<IEnumerable<CommandPlan>>> asyncPlanFactory);
+
+    /// <summary>
+    /// <see cref="Executes(Func{Task})"/> with the build's cancellation token (#125): cancelled on Ctrl+C, SIGTERM or
+    /// SIGHUP, so <c>Executes(async ct =&gt; await client.GetAsync(url, ct))</c> stops promptly when the build is
+    /// interrupted. The token is <see cref="TampBuild.BuildCancellation"/> as of when the body starts.
+    /// </summary>
+    ITargetDefinition Executes(Func<CancellationToken, Task> asyncAction) =>
+        Executes(() => asyncAction(TampBuild.BuildCancellation));
+
+    /// <summary><see cref="Executes(Func{Task{CommandPlan}})"/> with the build's cancellation token (#125).</summary>
+    ITargetDefinition Executes(Func<CancellationToken, Task<CommandPlan>> asyncPlanFactory) =>
+        Executes(() => asyncPlanFactory(TampBuild.BuildCancellation));
+
+    /// <summary><see cref="Executes(Func{Task{IEnumerable{CommandPlan}}})"/> with the build's cancellation token (#125).</summary>
+    ITargetDefinition Executes(Func<CancellationToken, Task<IEnumerable<CommandPlan>>> asyncPlanFactory) =>
+        Executes(() => asyncPlanFactory(TampBuild.BuildCancellation));
 }
 
 /// <summary>

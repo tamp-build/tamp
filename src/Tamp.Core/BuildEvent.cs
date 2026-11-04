@@ -103,6 +103,15 @@ public sealed record BuildFinishedPayload : BuildEventPayload
     public int Skipped { get; init; }
     public int NotRun { get; init; }
     public int CommandsTotal { get; init; }
+
+    /// <summary>Targets that were running when the build was interrupted (#125).</summary>
+    public int Cancelled { get; init; }
+
+    /// <summary>
+    /// Why the build stopped, when it didn't simply succeed or fail, e.g. <c>signal: SIGINT</c> for an interrupted
+    /// build (<see cref="Status"/> <c>cancelled</c>). Null otherwise.
+    /// </summary>
+    public string? Reason { get; init; }
 }
 
 /// <summary><see cref="BuildEventTypes.TargetStarted"/> — emitted before a target's <c>Executes</c> block runs.</summary>

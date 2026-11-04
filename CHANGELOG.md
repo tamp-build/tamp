@@ -8,6 +8,19 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+### Added
+
+- **Build-wide cancellation and orderly interrupts** ([#125](https://github.com/tamp-build/tamp/issues/125), part 1). `tamp` now handles Ctrl+C, SIGTERM and SIGHUP itself instead of being killed mid-build:
+  - The first signal cancels the new **`TampBuild.BuildCancellation`** token (also passed to the new `Executes(async ct => ...)` overloads) and **`ProcessRunner` kills the running tool's whole process tree** and starts nothing new.
+  - The running target finishes with the new status **`cancelled`** (`reason: "signal: SIGINT"`; no remedy, no failure handlers), later targets are `not_run`, and `AssuredAfterFailure` cleanup targets still run with a fresh token that cancels when the shutdown grace period ends (default 10 s, `--shutdown-timeout <seconds>` / `TAMP_SHUTDOWN_TIMEOUT`).
+  - `build.finished` reports `status: "cancelled"`, `reason` and a `cancelled` count, and **the exit code is `128 + signal` on every OS** (130 SIGINT, 143 SIGTERM, 129 SIGHUP).
+  - A second signal, or the grace period running out, forces the exit after killing child process trees.
+  - Also: `ProcessCancelledException`, `ExecutionResult.InterruptSignal`, `IBuildReporter.OnTargetCancelled` (defaults to `OnTargetNotRun`), the `tamp mcp` run summary's `status` / `reason`, and the `cancelled` ADR-0018 outcome. Additive; the event schema stays `1.0`.
+
+### Changed
+
+- Event sinks are now written under a lock, so an event emitted off the build thread (a forced exit) can't interleave with the main loop's.
+
 ## [1.17.6] — 2026-11-02 — `tamp init` scaffolds current Tamp; Windows shim fix
 
 ### Fixed
