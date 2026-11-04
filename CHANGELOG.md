@@ -8,6 +8,8 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+## [1.18.0] — 2026-11-04 — Long-running services: build cancellation, ManagedProcess, service.* events
+
 ### Added
 
 - **Build-wide cancellation and orderly interrupts** ([#125](https://github.com/tamp-build/tamp/issues/125), part 1). `tamp` now handles Ctrl+C, SIGTERM and SIGHUP itself instead of being killed mid-build:
