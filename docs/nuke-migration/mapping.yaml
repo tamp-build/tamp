@@ -38,6 +38,10 @@
 #   settings: NUKE setting -> {to, args?, tier} (rename, optional fixed args) or {template, tier}
 #   in_tree:  true when the wrapper builds in this repo; its verbs and settings are verified
 #
+# namespaces: NUKE namespace -> the Tamp namespace whose types replace it, for the `usings` handler.
+#   Tool namespaces come from tools.<family>.nuke_namespace and Nuke.Components from the components
+#   rule; a Nuke namespace in neither is left in place with a marker.
+#
 # gaps: NUKE surface with no Tamp equivalent, surfaced by the inventory before any rewrite.
 
 version: "0.2"
@@ -52,6 +56,13 @@ handlers:
   secret-field: "`[Secret] [Parameter] readonly string X;` -> `[Secret] readonly Secret X;`; uses that need the value become `X.Reveal()` (marked)."
   from-path: "`[PathExecutable] readonly Tool X;` -> `[FromPath(\"<name>\")] readonly Tool X;`; name = the attribute's argument, else the field name lower-cased."
   components-namespace: "Map `Nuke.Components.<I>` to `Tamp.Components.<I>` for the interfaces Tamp.Components ships; others are marked."
+
+namespaces:
+  Nuke.Common: Tamp
+  Nuke.Common.IO: Tamp
+  Nuke.Common.ProjectModel: Tamp
+  Nuke.Common.Tooling: Tamp
+  Nuke.Common.Execution: Tamp
 
 rules:
   # ---- boilerplate ----
@@ -450,6 +461,7 @@ tools:
     verbs: { DotNetRestore: Restore, DotNetBuild: Build, DotNetTest: Test, DotNetPack: Pack, DotNetPublish: Publish, DotNetNuGetPush: NuGetPush, DotNetClean: Clean, DotNetFormat: Format }
     settings:
       SetProjectFile: { to: SetProject, tier: auto }
+      SetProject: { to: SetProject, tier: auto }
       SetConfiguration: { to: SetConfiguration, tier: auto }
       SetFramework: { to: SetFramework, tier: auto }
       SetRuntime: { to: SetRuntime, tier: auto }

@@ -8,6 +8,10 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+### Added
+
+- **`Tamp.Migrate`: the NUKE → Tamp rewriter** ([#131](https://github.com/tamp-build/tamp/issues/131), ADR 0021 Phase 2a). A separate dotnet tool, `tamp-migrate nuke [--root] [--build-dir] [--dry-run] [--package-major]`, so Roslyn stays out of the `tamp` tool every CI run installs (the packaging ADR 0021 settled). It parses the NUKE build with no restore and no compile, and applies the `auto` rows of the embedded `mapping.yaml`. No rule is hardcoded: base class, `Main` → `Execute<T>(args)` plus `.Default()` on the target (across partial files), usings (from a new `namespaces:` table), injection attributes, path helpers, the target DSL, and `DotNetTasks.*` → `DotNet.*` with every setting rewritten per the mapping. A call that ran a tool becomes `ProcessRunner.Run(DotNet.X(..))` in a statement, or the returned plan in `Executes(() => ..)`. Every other recognised site gets a `// TAMP-MIGRATE(<rule-id>): <what to do>` marker and is left alone, including unmapped verbs and settings, tool results that are used, families that aren't `auto`, and known gaps. `tamp-migration.json` / `.md` count each site as applied, assisted, manual or unmapped. A second run changes nothing. The tool is not packable yet; it ships once project generation, the verify option and the `tamp migrate nuke` forwarder land.
+
 ### Changed
 
 - **NUKE migration mapping, schema 0.2** ([#58](https://github.com/tamp-build/tamp/issues/58), Phase 2 step 1). `docs/nuke-migration/mapping.yaml` is now what `tamp migrate nuke` will apply. Every rule has a stable `id`, a `match` and `rewrite` from a closed vocabulary, a `marker` for anything not `auto`, and `verify`: the Tamp symbols it relies on. The new `tests/Tamp.Migrate.Tests` checks those symbols against Tamp.Core, Tamp.NetCli and Tamp.Components by reflection. That check corrected six rows of the reference:
