@@ -46,6 +46,10 @@
     <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0" />
   </ItemGroup>
 
+  <ItemGroup Label="NUKE migration (ADR 0021): reads docs/nuke-migration/mapping.yaml">
+    <PackageVersion Include="YamlDotNet" Version="18.1.0" />
+  </ItemGroup>
+
   <ItemGroup Label="Security analyzers — Roslyn SARIF leg of Wave 1 chain (TAM-248). Activated per build via /p:IncludeSecurityAnalyzers=true; idle on default Compile.">
     <PackageVersion Include="SonarAnalyzer.CSharp" Version="10.25.0.139117" />
     <PackageVersion Include="Roslynator.Analyzers" Version="4.15.0" />

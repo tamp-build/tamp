@@ -46,13 +46,16 @@ produces it lives in a separate satellite.
 
 - Plan of record: [ADR 0023](docs/adr/0023-attestation-evidence-contract.md)
 
-### 1.18.0 — NUKE → Tamp assisted migration
+### 1.19.0 — NUKE → Tamp assisted migration
+
+*(Moved from 1.18: 1.18.0 shipped long-running services — build cancellation, `ManagedProcess`, `service.*` events, [#125](https://github.com/tamp-build/tamp/issues/125).)*
 
 Tooling to convert an existing NUKE build to Tamp: the mapping reference (shipped) plus a converter
 **and** an agentic guided migration that walks a repo through the move, using the coverage/gap
 inventory to be honest about what can and can't be auto-converted.
 
-- Plan of record: [ADR 0021](docs/adr/0021-nuke-to-tamp-migration.md) · Tracking: epic
+- Plan of record: [ADR 0021](docs/adr/0021-nuke-to-tamp-migration.md) (Phase 2 design: a separate
+  `Tamp.Migrate` tool behind `tamp migrate nuke`) · Tracking: epic
   [#58](https://github.com/tamp-build/tamp/issues/58)
 
 ## Backlog *(planned, not yet scheduled to a minor)*
