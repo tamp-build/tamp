@@ -52,11 +52,18 @@ internal sealed record GitCommandResult(int ExitCode, string StdOut, string StdE
 
 internal sealed class ProcessGitRunner : IGitRunner
 {
+    private readonly ExecutableLocator _locator;
+
+    public ProcessGitRunner(ExecutableLocator? locator = null) => _locator = locator ?? ExecutableLocator.Current;
+
     public GitCommandResult Run(AbsolutePath repoRoot, IReadOnlyList<string> args, TimeSpan timeout)
     {
+        var git = _locator.Resolve("git", repoRoot.Value)
+            ?? throw new InvalidOperationException(
+                "git not found on PATH (entries that are relative or inside the working directory are not searched). Install git and re-run.");
         var psi = new ProcessStartInfo
         {
-            FileName = "git",
+            FileName = git,
             WorkingDirectory = repoRoot.Value,
             UseShellExecute = false,
             RedirectStandardOutput = true,

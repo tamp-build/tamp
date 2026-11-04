@@ -384,7 +384,13 @@ public sealed class SecurityPipelineBuildTests : IDisposable
         // No SBOM/SARIF produced yet → every Emit is a silent no-op; body must not throw.
         var b = new OverrideBuild(_tempRoot);
         var def = Materialize(b.T_Metrics);
-        def.RunExecutes();   // must not throw
+
+        var thrown = Record.Exception(() => def.RunExecutes());
+
+        Assert.Null(thrown);
+        Assert.True(def.HasExecutes);
+        // A metrics pass reads evidence; it must not create any (no placeholder SBOM / SARIF).
+        Assert.Empty(Directory.EnumerateFileSystemEntries(_tempRoot));
     }
 
     [Fact]
