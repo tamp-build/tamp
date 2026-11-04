@@ -70,9 +70,14 @@ internal static class Program
 
         Console.WriteLine($"tamp: dispatching to {buildProject}");
 
+        if (ExecutableLocator.Current.ResolveDotnet() is not { } dotnet)
+        {
+            Console.Error.WriteLine($"tamp: {Mcp.BuildProjectInvoker.DotnetNotFound}");
+            return ExitDispatchFailed;
+        }
         var psi = new ProcessStartInfo
         {
-            FileName = "dotnet",
+            FileName = dotnet,
             UseShellExecute = false,
             RedirectStandardOutput = false,
             RedirectStandardError = false,

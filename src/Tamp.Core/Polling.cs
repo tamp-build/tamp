@@ -29,17 +29,32 @@ public static class Polling
     /// <returns>true if the condition was satisfied within the timeout; false on timeout.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="condition"/> is null.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was signalled.</exception>
-    public static async Task<bool> Until(
+    public static Task<bool> Until(
         Func<CancellationToken, Task<bool>> condition,
         TimeSpan timeout,
         Backoff? backoff = null,
         Logger? logger = null,
         CancellationToken cancellationToken = default)
+        => Until(condition, timeout, TimeProvider.System, backoff, logger, cancellationToken);
+
+    /// <summary>
+    /// <see cref="Until(Func{CancellationToken, Task{bool}}, TimeSpan, Backoff?, Logger?, CancellationToken)"/>
+    /// against <paramref name="time"/>: the clock the budget is measured on, and the source of the waits.
+    /// Tests pass a virtual clock so their assertions don't depend on how fast the machine is (#142).
+    /// </summary>
+    internal static async Task<bool> Until(
+        Func<CancellationToken, Task<bool>> condition,
+        TimeSpan timeout,
+        TimeProvider time,
+        Backoff? backoff = null,
+        Logger? logger = null,
+        CancellationToken cancellationToken = default)
     {
         if (condition is null) throw new ArgumentNullException(nameof(condition));
+        if (time is null) throw new ArgumentNullException(nameof(time));
 
         backoff ??= Backoff.Constant(TimeSpan.FromSeconds(2));
-        var deadline = DateTimeOffset.UtcNow + timeout;
+        var deadline = time.GetUtcNow() + timeout;
         var attempt = 0;
 
         while (true)
@@ -53,7 +68,7 @@ public static class Polling
                 return true;
             }
 
-            var remaining = deadline - DateTimeOffset.UtcNow;
+            var remaining = deadline - time.GetUtcNow();
             if (remaining <= TimeSpan.Zero)
             {
                 logger?.Warn($"Polling.Until timed out after {attempt} attempt(s); {timeout.TotalSeconds:F1}s budget exhausted.");
@@ -64,7 +79,7 @@ public static class Polling
             if (delay > remaining) delay = remaining;
 
             logger?.Trace($"Polling.Until attempt {attempt} returned false; waiting {delay.TotalMilliseconds:F0}ms.");
-            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            await Task.Delay(delay, time, cancellationToken).ConfigureAwait(false);
         }
     }
 }

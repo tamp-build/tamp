@@ -86,9 +86,9 @@ public sealed class Solution
         }
     }
 
-    private static readonly Regex ProjectLineRegex = new(
-        @"^Project\(""\{(?<typeGuid>[^}]+)\}""\)\s*=\s*""(?<name>[^""]+)"",\s*""(?<path>[^""]+)"",\s*""\{(?<projGuid>[^}]+)\}""",
-        RegexOptions.Compiled);
+    // Anchored, and every repeat is a negated class bounded by its own delimiter: linear-time.
+    private static readonly Regex ProjectLineRegex = TampRegex.Create(
+        @"^Project\(""\{(?<typeGuid>[^}]+)\}""\)\s*=\s*""(?<name>[^""]+)"",\s*""(?<path>[^""]+)"",\s*""\{(?<projGuid>[^}]+)\}""");
 
     /// <summary>Solution-folder type GUID used by Visual Studio in legacy .sln files.</summary>
     private const string SolutionFolderTypeGuid = "2150E333-8FDC-42A3-9474-1A3956D46DE8";
@@ -102,7 +102,7 @@ public sealed class Solution
         {
             var line = raw.TrimStart('﻿', ' ', '\t');
             if (!line.StartsWith("Project(", StringComparison.Ordinal)) continue;
-            var m = ProjectLineRegex.Match(line);
+            var m = TampRegex.Match(ProjectLineRegex, line, $"a Project line of {path}");
             if (!m.Success) continue;
 
             var name = m.Groups["name"].Value;

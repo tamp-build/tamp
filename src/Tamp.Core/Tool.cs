@@ -49,22 +49,14 @@ public sealed class Tool
     {
         if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Tool name must not be null or whitespace.", nameof(name));
 
-        var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
-        var sep = OperatingSystem.IsWindows() ? ';' : ':';
         var extensions = OperatingSystem.IsWindows()
             ? new[] { ".cmd", ".exe", ".bat", ".ps1", "" }
             : new[] { "" };
 
-        foreach (var dir in pathEnv.Split(sep, StringSplitOptions.RemoveEmptyEntries))
-        {
-            foreach (var ext in extensions)
-            {
-                var candidate = Path.Combine(dir.Trim('"'), name + ext);
-                if (File.Exists(candidate))
-                    return new Tool(AbsolutePath.Create(candidate), workingDirectory);
-            }
-        }
-        return null;
+        // The same PATH walk Tamp's own launches use (ExecutableLocator), in its lenient mode: a [FromPath]
+        // tool the build put on PATH under its own tree is a deliberate choice, so nothing is refused here.
+        var found = ExecutableLocator.Current.FindOnPath(name, extensions, refusedRoots: null);
+        return found is null ? null : new Tool(AbsolutePath.Create(found), workingDirectory);
     }
 
     /// <summary>
