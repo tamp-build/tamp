@@ -7,6 +7,10 @@ using Tamp.OpenGrep;
 using Tamp.Security.Pipeline;
 using Tamp.SonarScanner.V10;
 
+// A named namespace (Sonar S3903), deliberately not under Tamp.*: there, Tamp.DotNetCoverage,
+// Tamp.SonarScanner etc. would shadow the DotNetCoverage / Sonar facades. Discovery is by Execute<Build>.
+namespace SelfBuild;
+
 /// <summary>
 /// Tamp's self-hosted build script — Tamp drives its own pipeline.
 /// Inherits <see cref="SecurityPipelineBuild"/> for the whole Wave 1+2
