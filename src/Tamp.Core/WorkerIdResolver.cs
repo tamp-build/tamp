@@ -69,9 +69,10 @@ internal static class WorkerIdResolver
     {
         try
         {
+            if (ExecutableLocator.Current.Resolve("git") is not { } git) return null;
             var psi = new ProcessStartInfo
             {
-                FileName = "git",
+                FileName = git,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
