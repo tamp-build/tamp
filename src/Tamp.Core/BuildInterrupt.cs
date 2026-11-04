@@ -66,6 +66,9 @@ internal sealed class BuildInterrupt : IDisposable
     /// <summary>True once a signal (or <see cref="RequestInterrupt"/>) has cancelled the build.</summary>
     internal bool IsInterrupted => _build.IsCancellationRequested;
 
+    /// <summary>True once a forced exit has begun.</summary>
+    internal bool HasForcedExit => Volatile.Read(ref _forced) == 1;
+
     /// <summary>The signal's name, e.g. <c>SIGINT</c>, once interrupted.</summary>
     internal string? Signal { get; private set; }
 
