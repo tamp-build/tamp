@@ -412,6 +412,20 @@ public sealed class MigratorTests
     }
 
     [Fact]
+    public void A_Crlf_Build_Stays_Crlf_And_Is_Still_Idempotent()
+    {
+        // Normalise first: this test file is itself CRLF on a Windows checkout.
+        var crlf = Corpus.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\n", "\r\n", StringComparison.Ordinal)
+            + "class Extra { void T() { Log.Warning(\"w\"); } }\r\n";
+        var (once, _) = Run(crlf);
+        var (twice, _) = Run(once);
+
+        Assert.DoesNotContain("\n", once.Replace("\r\n", "", StringComparison.Ordinal), StringComparison.Ordinal); // no bare LF
+        Assert.Contains("// TAMP-MIGRATE(logging.serilog): ", once, StringComparison.Ordinal);
+        Assert.Equal(once, twice);
+    }
+
+    [Fact]
     public void Running_Twice_On_A_Marked_Build_Adds_No_Second_Marker()
     {
         var input = NukeDotNetHeader + "    void T() { DotNetToolRestore(); Log.Warning(\"w\"); }\n    [GitRepository] readonly GitRepository Repo;\n}\n";
@@ -428,9 +442,9 @@ public sealed class MigratorTests
     {
         var (output, _) = Run(Corpus);
         // The one Serilog call is a marker for a person; take it out so the rest must compile as written.
-        var tamp = output
-            .Replace("using Serilog;\n", "", StringComparison.Ordinal)
-            .Replace("Log.Information(\"Packing into {Dir}\", ArtifactsDirectory);", "", StringComparison.Ordinal);
+        // Line by line, not by "...\n": on a Windows checkout this file (and so Corpus) is CRLF.
+        var tamp = string.Join("\n", output.Split('\n')
+            .Where(l => l.TrimEnd('\r') != "using Serilog;" && !l.Contains("Log.Information(", StringComparison.Ordinal)));
 
         var errors = Compile(tamp);
         Assert.True(errors.Count == 0, string.Join("\n", errors) + "\n---\n" + tamp);
