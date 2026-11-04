@@ -14,4 +14,3 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: ci
-    labels: []
