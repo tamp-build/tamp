@@ -225,6 +225,22 @@ public sealed class MappingTests
     }
 
     [Fact]
+    public void Namespaces_Map_Nuke_Namespaces_To_In_Tree_Tamp_Namespaces()
+    {
+        // The `usings` handler drops each key and adds its value, so every value must be a real namespace.
+        var tampNamespaces = InTree.SelectMany(a => a.GetExportedTypes()).Select(t => t.Namespace).ToHashSet();
+        var namespaces = Map(Mapping.Value["namespaces"]);
+        Assert.NotEmpty(namespaces);
+        var tools = Tools.Values.Select(t => Str(Map(t), "nuke_namespace")).ToHashSet();
+        foreach (var (nuke, tamp) in namespaces)
+        {
+            Assert.StartsWith("Nuke.", (string)nuke, StringComparison.Ordinal);
+            Assert.DoesNotContain((string)nuke, tools); // tool namespaces are mapped by their family
+            Assert.True(tampNamespaces.Contains((string)tamp), $"namespaces: {nuke} -> {tamp}, which isn't an in-tree namespace");
+        }
+    }
+
+    [Fact]
     public void Gaps_Are_Well_Formed()
     {
         var gaps = Map(Mapping.Value["gaps"]);

@@ -29,6 +29,7 @@
     <Project Path="src/Tamp.Security.Pipeline/Tamp.Security.Pipeline.csproj" />
     <Project Path="src/Tamp.Components/Tamp.Components.csproj" />
     <Project Path="src/Tamp.Components.NetCli.V10/Tamp.Components.NetCli.V10.csproj" />
+    <Project Path="src/Tamp.Migrate/Tamp.Migrate.csproj" />
   </Folder>
   <Folder Name="/build/">
     <Project Path="build/Build.csproj" />
