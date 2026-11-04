@@ -34,6 +34,7 @@ internal sealed class BuildInterrupt : IDisposable
 
     private readonly CancellationTokenSource _build = new();
     private readonly ChildProcesses _children = new();
+    private readonly ConcurrentDictionary<ManagedProcess, byte> _managed = new();
     private readonly AsyncLocal<CancellationTokenSource?> _cleanup = new();
     private readonly List<PosixSignalRegistration> _registrations = new();
     private readonly TextWriter _log;
@@ -77,6 +78,24 @@ internal sealed class BuildInterrupt : IDisposable
 
     /// <summary>The build token, or the cleanup token while <see cref="EnterCleanup"/> is in effect.</summary>
     internal CancellationToken Token => _cleanup.Value?.Token ?? _build.Token;
+
+    /// <summary>Register a <see cref="ManagedProcess"/> of this run, so the executor can stop it if target code doesn't.</summary>
+    internal IDisposable RegisterManaged(ManagedProcess process)
+    {
+        _managed.TryAdd(process, 0);
+        return new Restore(() => _managed.TryRemove(process, out _));
+    }
+
+    /// <summary>
+    /// Stop every managed process still running (the end-of-run backstop: a service started in one target may serve
+    /// later ones, but none outlives the build). Returns how many were stopped.
+    /// </summary>
+    internal int StopManagedProcesses(string reason)
+    {
+        var running = _managed.Keys.ToList();
+        foreach (var p in running) p.Stop(reason);
+        return running.Count;
+    }
 
     /// <summary>Track a child process of this run, so a forced exit kills its tree. Dispose when it has exited.</summary>
     internal IDisposable TrackChild(Process process) => _children.Track(process);

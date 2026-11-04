@@ -240,6 +240,9 @@ public static class BuildEvents
         });
     }
 
+    /// <summary>#125: capture the active scope at the current target, for emission from other threads later. Null when inactive.</summary>
+    internal static CapturedEventScope? Capture() => Current.Value?.Capture();
+
     /// <summary>Activate <paramref name="scope"/> for the current async flow; dispose restores the prior scope. Executor-internal.</summary>
     internal static IDisposable Activate(BuildEventScope scope)
     {
@@ -278,12 +281,35 @@ internal sealed class BuildEventScope
     private readonly Action<string, string?, BuildEventPayload> _emit;
     private readonly Func<string> _newSpanId;
     private readonly RedactionTable _redaction;
+    private readonly Action<string, string?, string, string?, BuildEventPayload>? _emitRaw;
+    private readonly Func<(string? TargetId, string ParentSpanId)>? _currentParent;
 
-    public BuildEventScope(Action<string, string?, BuildEventPayload> emit, Func<string> newSpanId, RedactionTable redaction)
+    /// <param name="emit">Ambient emission, parented to whatever target is current when it's called.</param>
+    /// <param name="newSpanId">Span id factory.</param>
+    /// <param name="redaction">The build's redaction table.</param>
+    /// <param name="emitRaw">#125: emission with an explicit target and parent span, safe from any thread.</param>
+    /// <param name="currentParent">#125: the current target and its span (the build span between targets).</param>
+    public BuildEventScope(Action<string, string?, BuildEventPayload> emit, Func<string> newSpanId, RedactionTable redaction,
+        Action<string, string?, string, string?, BuildEventPayload>? emitRaw = null,
+        Func<(string? TargetId, string ParentSpanId)>? currentParent = null)
     {
         _emit = emit;
         _newSpanId = newSpanId;
         _redaction = redaction;
+        _emitRaw = emitRaw;
+        _currentParent = currentParent;
+    }
+
+    /// <summary>
+    /// #125: freeze the current target as the parent, for a long-lived emitter (a <see cref="ManagedProcess"/>)
+    /// that keeps emitting after that target moved on, and from other threads. Null when the executor didn't
+    /// supply the raw emitter.
+    /// </summary>
+    internal CapturedEventScope? Capture()
+    {
+        if (_emitRaw is null || _currentParent is null) return null;
+        var (targetId, parent) = _currentParent();
+        return new CapturedEventScope(this, _emitRaw, targetId, parent);
     }
 
     /// <summary>Emit with an executor-generated span id (for standalone events).</summary>
@@ -300,4 +326,54 @@ internal sealed class BuildEventScope
 
     /// <summary>Register a plan's declared secrets so its argv/output can be redacted.</summary>
     public void RegisterSecrets(CommandPlan plan) => _redaction.RegisterAll(plan);
+}
+
+/// <summary>
+/// #125: a build event scope frozen at one target, usable from any thread for as long as the run lasts. Events go
+/// straight to the executor's (locked) emitter with the captured target as parent, so they don't feed per-target
+/// bookkeeping such as the non-zero-tool advisory (a killed service exits non-zero by design).
+/// </summary>
+internal sealed class CapturedEventScope
+{
+    private readonly BuildEventScope _scope;
+    private readonly Action<string, string?, string, string?, BuildEventPayload> _emitRaw;
+
+    internal CapturedEventScope(BuildEventScope scope, Action<string, string?, string, string?, BuildEventPayload> emitRaw, string? targetId, string parentSpanId)
+    {
+        _scope = scope;
+        _emitRaw = emitRaw;
+        TargetId = targetId;
+        ParentSpanId = parentSpanId;
+    }
+
+    /// <summary>The target that was current when the scope was captured (null between targets).</summary>
+    internal string? TargetId { get; }
+
+    /// <summary>The span captured events are parented to.</summary>
+    internal string ParentSpanId { get; }
+
+    internal string NewSpanId() => _scope.NewSpanId();
+
+    internal string Redact(string input) => _scope.Redact(input);
+
+    internal void Emit(string type, string spanId, BuildEventPayload payload) => _emitRaw(type, TargetId, spanId, ParentSpanId, payload);
+
+    /// <summary>
+    /// The <see cref="BuildEvents.ToolInvoked"/> sequence on a new command span: register the plan's secrets, emit
+    /// <c>secret.access.requested</c> per secret, then <c>tool.invoked</c> with redacted argv. Returns the span.
+    /// </summary>
+    internal string ToolInvoked(CommandPlan plan)
+    {
+        _scope.RegisterSecrets(plan);
+        var span = NewSpanId();
+        foreach (var secret in plan.Secrets)
+            Emit(BuildEventTypes.SecretAccessRequested, span, new SecretAccessRequestedPayload { Name = secret.Name, Capability = "secret.reveal" });
+        Emit(BuildEventTypes.ToolInvoked, span, new ToolInvokedPayload
+        {
+            Tool = plan.Executable,
+            ArgvRedacted = plan.Arguments.Select(a => Redact(a)).ToArray(),
+            Cwd = plan.WorkingDirectory,
+        });
+        return span;
+    }
 }

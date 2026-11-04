@@ -594,7 +594,9 @@ public sealed class Executor
             if (type == BuildEventTypes.ToolExited && payload is ToolExitedPayload te && te.ExitCode != 0)
                 _currentTargetSawNonzeroTool = true;
             Emit(type, _currentTargetId, spanId ?? NewSpanId(), _currentTargetSpanId ?? _buildSpanId, payload);
-        }, NewSpanId, _redactionTable));
+        }, NewSpanId, _redactionTable,
+            emitRaw: Emit,
+            currentParent: () => (_currentTargetId, _currentTargetSpanId ?? _buildSpanId)));
 
         // #17: load the per-worktree input-hash store for the would-skip advisory.
         if (_cacheAdvice)
@@ -978,6 +980,12 @@ public sealed class Executor
         // Between targets / at build end, ambient events parent to the build span.
         _currentTargetId = null;
         _currentTargetSpanId = null;
+
+        // #125: no managed process (a dev server, an emulator) outlives the build. One a target started and never
+        // disposed is stopped here, so its service.stopped / tool.exited land before build.finished.
+        var leftover = interrupt.StopManagedProcesses(interrupt.IsInterrupted ? ServiceStopReason.Signal : ServiceStopReason.Requested);
+        if (leftover > 0)
+            _log.WriteRaw($"==> stopped {leftover} managed process{(leftover == 1 ? "" : "es")} still running at the end of the build");
 
         // #17: persist the updated input-hash store for the next run's advisory.
         if (_cacheAdvice) _hashCache?.Save();
