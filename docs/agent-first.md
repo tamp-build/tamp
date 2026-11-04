@@ -148,6 +148,29 @@ It flows like `BuildEvents`, through the target's async continuations but not in
 itself. Outside a run it is `CancellationToken.None`. `IBuildReporter.OnTargetCancelled` reports a cancelled
 target; by default it forwards to `OnTargetNotRun`, so existing reporters keep working.
 
+## Long-running services
+
+Some targets start something that keeps running: a dev server, a storage emulator, a compose stack. The
+service's process is still announced with `tool.invoked` / `tool.exited`, but those can't say "it's usable now"
+or "it stopped on purpose". Two events do:
+
+- **`service.ready`**: the service passed its readiness check. Carries `kind` (the wrapper's name for it, e.g.
+  `heft-dev-server`), `url`, and optionally `port`, `pid`, `processStartTime` (UTC; with `pid` it identifies the
+  process even if the PID is reused), `readinessProbe` (what answered the check) and `statePath` (a state file
+  for readers outside the build). Never credentials or session state; `url` and `readinessProbe` go through the
+  secret-redaction table.
+- **`service.stopped`**: the service stopped, whether or not it became ready. `reason` is one of `requested`
+  (stopped on purpose), `signal` (Ctrl+C, SIGTERM, SIGHUP), `exited` (it exited on its own, crash or failed
+  start) or `timeout` (never became ready). Optional `pid`, `exitCode` and `durationMs`.
+
+**Read `reason`, not the exit code.** A service stopped on purpose is usually killed, so its `tool.exited`
+code is non-zero (137 on Linux) for what was a success.
+
+Wrappers emit them with `BuildEvents.ServiceReady(...)` / `BuildEvents.ServiceStopped(...)`. Pass the command
+span `BuildEvents.ToolInvoked(plan)` returned so all four events (`tool.invoked`, `service.ready`,
+`service.stopped`, `tool.exited`) share one span. Like the other ambient emitters they are no-ops outside a
+build, but they flow through `AsyncLocal`, so emit from the target's own flow, not from a signal handler.
+
 ## `tamp mcp` — the control surface
 
 `tamp mcp` runs Tamp as a [Model Context Protocol](https://modelcontextprotocol.io) server over
