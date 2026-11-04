@@ -254,7 +254,9 @@ public sealed class BuildCancellationTests
         {
             Interrupt();
             if (SecondInterrupt) Interrupt();
-            else Thread.Sleep(TimeSpan.FromSeconds(3)); // ignores the token; outlasts grace (0.2s) + slack (2s)
+            // Ignore the token until the grace timer (0.2s + 2s slack) forces the exit. Wait for that rather than a
+            // fixed sleep: on a loaded runner the timer can fire late.
+            else SpinWait.SpinUntil(() => BuildInterrupt.Active!.HasForcedExit, TimeSpan.FromSeconds(20));
         });
     }
 

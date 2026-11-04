@@ -289,7 +289,9 @@ public sealed class ManagedProcess : IAsyncDisposable, IDisposable
     {
         if (Interlocked.Exchange(ref _stopping, 1) == 1)
         {
-            _finished.Wait(Bound(_options.ShutdownTimeout + (_options.GracefulStopTimeout ?? TimeSpan.Zero) + TimeSpan.FromSeconds(5)));
+            // Wait for the first stop to finish. Deliberately not cancellable: stops happen exactly when the build is
+            // being cancelled, and returning early would let the build exit with the tree still being killed.
+            _finished.Wait(Bound(_options.ShutdownTimeout + (_options.GracefulStopTimeout ?? TimeSpan.Zero) + TimeSpan.FromSeconds(5)), CancellationToken.None);
             return;
         }
 
