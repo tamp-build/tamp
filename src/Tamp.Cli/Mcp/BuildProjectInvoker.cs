@@ -13,11 +13,17 @@ internal sealed class BuildProjectInvoker : IBuildInvoker
 
     public BuildProjectInvoker(string buildProject) => _buildProject = buildProject;
 
+    internal const string DotnetNotFound =
+        "couldn't find dotnet: not the running host, not under DOTNET_ROOT, and not on PATH "
+        + "(entries that are relative or inside the working directory are not searched).";
+
     public (int ExitCode, string Stdout, string Stderr) Run(IReadOnlyList<string> args)
     {
+        if (ExecutableLocator.Current.ResolveDotnet() is not { } dotnet)
+            return (-1, string.Empty, DotnetNotFound);
         var psi = new ProcessStartInfo
         {
-            FileName = "dotnet",
+            FileName = dotnet,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
