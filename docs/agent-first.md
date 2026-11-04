@@ -166,10 +166,37 @@ or "it stopped on purpose". Two events do:
 **Read `reason`, not the exit code.** A service stopped on purpose is usually killed, so its `tool.exited`
 code is non-zero (137 on Linux) for what was a success.
 
-Wrappers emit them with `BuildEvents.ServiceReady(...)` / `BuildEvents.ServiceStopped(...)`. Pass the command
-span `BuildEvents.ToolInvoked(plan)` returned so all four events (`tool.invoked`, `service.ready`,
-`service.stopped`, `tool.exited`) share one span. Like the other ambient emitters they are no-ops outside a
-build, but they flow through `AsyncLocal`, so emit from the target's own flow, not from a signal handler.
+### `ManagedProcess`: the usual way to run one
+
+`ManagedProcess` starts a `CommandPlan`, waits until it's ready, and emits all four events on one command span,
+parented to the target that started it:
+
+```csharp
+await using var api = await ManagedProcess.StartAsync(plan, new ManagedProcessOptions
+{
+    Kind = "api",
+    Readiness = Readiness.Http(new Uri("http://localhost:5000/health")),   // or Tcp(host, port), OutputMatches(regex), When(check, "...")
+    ServiceUrl = "http://localhost:5000/",
+    Port = 5000,
+});
+```
+
+- **Ready means the check passed.** `Readiness.Http` needs a success status, not just an open port, and
+  `acceptLoopbackSelfSigned: true` accepts a dev server's self-signed certificate on loopback hosts only. If the
+  process exits first, `StartAsync` throws with the last lines of its output (reason `exited`). If the check
+  times out (`ReadyTimeout`, default 5 min), it throws `TimeoutException` (reason `timeout`).
+- **Stopping kills the whole tree.** Dispose stops it with reason `requested`. On Unix, `GracefulStopTimeout`
+  sends SIGTERM first. Stopping is idempotent and safe from several threads at once; a second caller waits for
+  the first to finish.
+- **The build is the backstop.** On Ctrl+C / SIGTERM / SIGHUP it is stopped immediately (reason `signal`). It may
+  outlive its target (start a database in one target, test against it in the next), but anything still running
+  when the build ends is stopped before `build.finished`.
+- **It exiting on its own is recorded straight away** (reason `exited`). `HasExited` and `WaitForExitAsync` show it.
+
+For a service `ManagedProcess` doesn't fit, emit the events yourself with `BuildEvents.ServiceReady(...)` /
+`BuildEvents.ServiceStopped(...)`. Pass the command span `BuildEvents.ToolInvoked(plan)` returned, so all four
+events share one span. Those emitters flow through `AsyncLocal`, so call them from the target's own flow, not from
+a signal handler; `ManagedProcess` handles that for you.
 
 ## `tamp mcp` — the control surface
 
