@@ -39,6 +39,8 @@ public static class BuildEventSchema
         BuildEventTypes.ArtifactProduced,
         BuildEventTypes.GateEvaluated,
         BuildEventTypes.ConformanceEvaluated,
+        BuildEventTypes.ServiceReady,
+        BuildEventTypes.ServiceStopped,
     };
 }
 
@@ -60,6 +62,35 @@ public static class BuildEventTypes
 
     /// <summary>Attestation evidence contract (ADR 0023): an ADR-conformance verdict.</summary>
     public const string ConformanceEvaluated = "conformance.evaluated";
+
+    /// <summary>A long-running service a target started (a dev server, an emulator) is ready to use (#124).</summary>
+    public const string ServiceReady = "service.ready";
+
+    /// <summary>A long-running service stopped, with the reason (#124).</summary>
+    public const string ServiceStopped = "service.stopped";
+}
+
+/// <summary>
+/// Pinned reason vocabulary for <see cref="ServiceStoppedPayload.Reason"/> (#124). Lets a consumer tell a
+/// deliberate shutdown from a failure without reading the exit code: a service that is stopped on purpose is
+/// usually killed, so its <c>tool.exited</c> code is non-zero (137 on Linux) even though nothing went wrong.
+/// </summary>
+public static class ServiceStopReason
+{
+    /// <summary>The build stopped it on purpose (the owning handle was disposed, the target finished).</summary>
+    public const string Requested = "requested";
+
+    /// <summary>Stopped because the build received a termination signal (Ctrl+C, SIGTERM, SIGHUP).</summary>
+    public const string Signal = "signal";
+
+    /// <summary>The service's process exited on its own: a crash, or a failure before it became ready.</summary>
+    public const string Exited = "exited";
+
+    /// <summary>It never became ready within its readiness timeout and was stopped.</summary>
+    public const string Timeout = "timeout";
+
+    /// <summary>The pinned set, in declaration order.</summary>
+    public static readonly IReadOnlyList<string> All = new[] { Requested, Signal, Exited, Timeout };
 }
 
 /// <summary>Pinned status vocabulary for <see cref="TargetFinishedPayload.Status"/> and <see cref="BuildFinishedPayload.Status"/>.</summary>
