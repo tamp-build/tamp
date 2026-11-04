@@ -106,6 +106,93 @@ public static class BuildEvents
     }
 
     /// <summary>
+    /// #124: emit <c>service.ready</c>: a service the target started is usable at <paramref name="url"/>.
+    /// No-op if inactive; returns the span the event went on, or <c>null</c> when inactive.
+    /// </summary>
+    /// <param name="kind">The service kind, as the wrapper names it (e.g. <c>heft-dev-server</c>).</param>
+    /// <param name="url">Where to reach the service.</param>
+    /// <param name="spanId">
+    /// The span to emit on. Pass the command span <see cref="ToolInvoked"/> returned for the service's process so
+    /// <c>tool.invoked</c>, <c>service.ready</c>, <c>service.stopped</c> and <c>tool.exited</c> share one span. When
+    /// null, a new span parented to the current target is used; pass the returned id to <see cref="ServiceStopped"/>.
+    /// </param>
+    /// <param name="port">The listening port.</param>
+    /// <param name="pid">PID of the root process serving it.</param>
+    /// <param name="processStartTime">When that process started (UTC).</param>
+    /// <param name="readinessProbe">What answered the readiness check, when it differs from <paramref name="url"/>.</param>
+    /// <param name="statePath">A state file describing the running service, when one is written.</param>
+    /// <remarks>
+    /// The scope flows through <see cref="System.Threading.AsyncLocal{T}"/>, so a call from a thread the target
+    /// didn't start (a signal handler, a process-exit callback) is a no-op. Emit from the target's own flow.
+    /// </remarks>
+    public static string? ServiceReady(
+        string kind,
+        string url,
+        string? spanId = null,
+        int? port = null,
+        int? pid = null,
+        DateTimeOffset? processStartTime = null,
+        string? readinessProbe = null,
+        string? statePath = null)
+    {
+        if (string.IsNullOrWhiteSpace(kind)) throw new ArgumentException("kind is required.", nameof(kind));
+        if (string.IsNullOrWhiteSpace(url)) throw new ArgumentException("url is required.", nameof(url));
+        if (port is < 0 or > 65535) throw new ArgumentOutOfRangeException(nameof(port), port, "port must be 0-65535.");
+        var scope = Current.Value;
+        if (scope is null) return null;
+
+        var span = spanId ?? scope.NewSpanId();
+        scope.Emit(BuildEventTypes.ServiceReady, span, new ServiceReadyPayload
+        {
+            Kind = kind,
+            Url = scope.Redact(url),
+            Port = port,
+            Pid = pid,
+            ProcessStartTime = processStartTime?.ToUniversalTime(),
+            ReadinessProbe = readinessProbe is null ? null : scope.Redact(readinessProbe),
+            StatePath = statePath,
+        });
+        return span;
+    }
+
+    /// <summary>
+    /// #124: emit <c>service.stopped</c> with a <see cref="ServiceStopReason"/>. No-op if inactive. Emit it whether
+    /// or not the service ever became ready (a failed start is <c>exited</c> or <c>timeout</c>).
+    /// </summary>
+    /// <param name="kind">Same as for <see cref="ServiceReady"/>.</param>
+    /// <param name="reason">One of <see cref="ServiceStopReason"/>.</param>
+    /// <param name="spanId">The span <see cref="ServiceReady"/> used (or the command span); null emits on a new span.</param>
+    /// <param name="pid">PID of the root process.</param>
+    /// <param name="exitCode">The process's exit code, when known.</param>
+    /// <param name="durationMs">How long the service ran.</param>
+    /// <exception cref="ArgumentException"><paramref name="reason"/> is not in the pinned vocabulary.</exception>
+    public static void ServiceStopped(
+        string kind,
+        string reason,
+        string? spanId = null,
+        int? pid = null,
+        int? exitCode = null,
+        double? durationMs = null)
+    {
+        if (string.IsNullOrWhiteSpace(kind)) throw new ArgumentException("kind is required.", nameof(kind));
+        if (!ServiceStopReason.All.Contains(reason))
+            throw new ArgumentException(
+                $"'{reason}' is not a service stop reason; use one of {string.Join(", ", ServiceStopReason.All)}.", nameof(reason));
+        if (durationMs is < 0) throw new ArgumentOutOfRangeException(nameof(durationMs), durationMs, "durationMs must not be negative.");
+        var scope = Current.Value;
+        if (scope is null) return;
+
+        scope.Emit(BuildEventTypes.ServiceStopped, spanId ?? scope.NewSpanId(), new ServiceStoppedPayload
+        {
+            Kind = kind,
+            Reason = reason,
+            Pid = pid,
+            ExitCode = exitCode,
+            DurationMs = durationMs,
+        });
+    }
+
+    /// <summary>
     /// #66: announce that a child process is about to be spawned for <paramref name="plan"/> —
     /// emits <c>secret.access.requested</c> for each declared secret and <c>tool.invoked</c> (with
     /// argv scrubbed through the build's redaction table), all sharing one command span parented to
