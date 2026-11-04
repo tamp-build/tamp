@@ -58,6 +58,19 @@ public abstract partial class TampBuild
     }
 
     /// <summary>
+    /// The build's cancellation token (#125). Cancelled when the build is interrupted (Ctrl+C, SIGTERM, SIGHUP);
+    /// inside an <c>AssuredAfterFailure</c> cleanup target after an interrupt it is a fresh token that cancels when
+    /// the shutdown grace period ends. <see cref="CancellationToken.None"/> outside a run.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ProcessRunner"/> observes it already: a cancelled build kills the running child process tree.
+    /// Pass it to anything long-running a target awaits, or take it as a parameter:
+    /// <c>Executes(async ct =&gt; await SomethingAsync(ct))</c>. It flows like <see cref="BuildEvents"/>, through the
+    /// target's async continuations but not into threads a target starts itself.
+    /// </remarks>
+    public static CancellationToken BuildCancellation => BuildInterrupt.CurrentToken;
+
+    /// <summary>
     /// Tamp's per-build scratch directory. Lives at
     /// <c>RootDirectory / ".tamp" / "temp"</c>; created on first access.
     /// </summary>
@@ -652,7 +665,9 @@ public abstract partial class TampBuild
                 runOnly: runOnly,
                 ruleFilters: _ruleFilter,
                 cacheAdvice: ResolveCacheAdvice(args, Environment.GetEnvironmentVariable),
-                captureLogs: ResolveCaptureLogs(args, Environment.GetEnvironmentVariable));
+                captureLogs: ResolveCaptureLogs(args, Environment.GetEnvironmentVariable),
+                handleSignals: true,
+                shutdownTimeout: ResolveShutdownTimeout(args, Environment.GetEnvironmentVariable));
             return executor.Run(targetNames.ToArray()).ExitCode;
         }
         catch (InvalidOperationException ex)
@@ -708,6 +723,34 @@ public abstract partial class TampBuild
         }
         var env = getEnv("TAMP_EVENTS");
         return string.IsNullOrWhiteSpace(env) ? null : env;
+    }
+
+    /// <summary>
+    /// Resolve the #125 shutdown grace period: <c>--shutdown-timeout &lt;seconds&gt;</c> /
+    /// <c>--shutdown-timeout=&lt;seconds&gt;</c>, else <c>TAMP_SHUTDOWN_TIMEOUT</c>, else 10 s. How long cleanup
+    /// targets get after an interrupt before the build is forced to exit. Zero forces at once.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The value isn't a non-negative number of seconds.</exception>
+    internal static TimeSpan ResolveShutdownTimeout(string[] args, Func<string, string?> getEnv)
+    {
+        string? raw = null;
+        string source = "TAMP_SHUTDOWN_TIMEOUT";
+        for (var i = 0; i < args.Length; i++)
+        {
+            var a = args[i];
+            if (a.StartsWith("--shutdown-timeout=", StringComparison.Ordinal)) { raw = a["--shutdown-timeout=".Length..]; source = "--shutdown-timeout"; }
+            else if (a == "--shutdown-timeout")
+            {
+                raw = i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal) ? args[i + 1] : "";
+                source = "--shutdown-timeout";
+            }
+        }
+        raw ??= getEnv("TAMP_SHUTDOWN_TIMEOUT");
+        if (raw is null) return BuildInterrupt.DefaultGracePeriod;
+        if (!double.TryParse(raw.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var seconds)
+            || seconds < 0 || double.IsNaN(seconds) || seconds > TimeSpan.MaxValue.TotalSeconds / 2)
+            throw new InvalidOperationException($"{source} must be a non-negative number of seconds (e.g. `--shutdown-timeout 30`), not '{raw}'.");
+        return TimeSpan.FromSeconds(seconds);
     }
 
     /// <summary>Resolve the #17 would-skip cache advisory opt-in: <c>--cache-advice</c> flag or truthy <c>TAMP_CACHE_ADVICE</c>. Default off.</summary>
@@ -907,6 +950,7 @@ public abstract partial class TampBuild
         w.WriteLine("  --enforce agent          Deny side-effectful work by default (--allow-side-effects to elevate).");
         w.WriteLine("  --capture-logs           Tee per-target output to redacted .tamp/logs.");
         w.WriteLine("  --cache-advice           Report would-skip advisories for unchanged inputs.");
+        w.WriteLine("  --shutdown-timeout <s>   Seconds cleanup targets get after Ctrl+C / SIGTERM (default 10).");
         w.WriteLine("  --verbosity <level>      quiet | minimal | normal | verbose | diagnostic.");
         w.WriteLine("  --help, -h               Show this help.");
         w.WriteLine();
@@ -987,6 +1031,7 @@ public abstract partial class TampBuild
                     // ResolveRuleFilters / ResolveFromTarget / ResolveCapabilityMode). No-op here, but
                     // consume the value token in the space form so it isn't taken as a target name.
                     case "events":
+                    case "shutdown-timeout":
                     case "rule":
                     case "from":
                     case "downstream":

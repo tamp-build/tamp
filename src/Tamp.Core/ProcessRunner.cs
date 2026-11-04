@@ -66,15 +66,18 @@ public static class ProcessRunner
             lock (lockObj) lines.Add(new OutputLine(OutputType.Stderr, e.Data));
             alsoStderr?.WriteLine(e.Data);
         };
+        var cancellation = BuildInterrupt.CurrentToken;
+        cancellation.ThrowIfCancellationRequested();
         process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-        if (plan.StandardInput is not null)
+        using (BuildInterrupt.Active?.TrackChild(process))
+        using (cancellation.Register(() => ChildProcesses.KillTree(process)))
         {
-            process.StandardInput.Write(plan.StandardInput);
-            process.StandardInput.Close();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            WriteStandardInput(process, plan);
+            process.WaitForExit();
         }
-        process.WaitForExit();
+        ThrowIfStoppedByCancellation(plan, cancellation, process.ExitCode);
         return new CaptureResult(process.ExitCode, lines);
     }
 
@@ -150,17 +153,22 @@ public static class ProcessRunner
         // active (standalone use) or when the executor's own declarative loop is the caller (it
         // emits these itself and suppresses this). Makes imperative & failure-handler dispatch
         // visible on --events, not only on the ADR-0018 span above.
+        // #125: a cancelled build starts nothing new.
+        var cancellation = BuildInterrupt.CurrentToken;
+        cancellation.ThrowIfCancellationRequested();
         var cmdEventSpanId = BuildEvents.ToolInvoked(plan);
 
         process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-        if (plan.StandardInput is not null)
+        // #125: on cancellation kill the whole tree (a tool's own children included); a forced exit kills
+        // whatever is still tracked.
+        using (BuildInterrupt.Active?.TrackChild(process))
+        using (cancellation.Register(() => ChildProcesses.KillTree(process)))
         {
-            process.StandardInput.Write(plan.StandardInput);
-            process.StandardInput.Close();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            WriteStandardInput(process, plan);
+            process.WaitForExit();
         }
-        process.WaitForExit();
 
         // After-exit child-process tags. Reading these requires the Process object
         // to still hold the handle — safe here because we haven't disposed yet.
@@ -216,7 +224,23 @@ public static class ProcessRunner
             new KeyValuePair<string, object?>(TampDiagnostics.Tags.CmdExecutable, plan.Executable),
             new KeyValuePair<string, object?>(TampDiagnostics.Tags.OutcomeKey, outcome));
 
+        ThrowIfStoppedByCancellation(plan, cancellation, process.ExitCode);
         return process.ExitCode;
+    }
+
+    private static void WriteStandardInput(Process process, CommandPlan plan)
+    {
+        if (plan.StandardInput is null) return;
+        process.StandardInput.Write(plan.StandardInput);
+        process.StandardInput.Close();
+    }
+
+    // #125: the process ended because the build was cancelled (and was killed), so its exit code means nothing;
+    // report the cancellation instead of a failure.
+    private static void ThrowIfStoppedByCancellation(CommandPlan plan, CancellationToken cancellation, int exitCode)
+    {
+        if (cancellation.IsCancellationRequested)
+            throw new ProcessCancelledException(plan.Executable, exitCode, cancellation);
     }
 
     /// <summary>
@@ -290,4 +314,25 @@ public static class ProcessRunner
             return "\"" + arg.Replace("\"", "\\\"") + "\"";
         return arg;
     }
+}
+
+/// <summary>
+/// #125: a process <see cref="ProcessRunner"/> was running was stopped because the build was cancelled (Ctrl+C,
+/// SIGTERM, SIGHUP). Its process tree was killed, so <see cref="ExitCode"/> reflects the kill, not the tool.
+/// </summary>
+public sealed class ProcessCancelledException : OperationCanceledException
+{
+    /// <summary>Create the exception for <paramref name="executable"/>.</summary>
+    public ProcessCancelledException(string executable, int exitCode, CancellationToken token)
+        : base($"{executable} was stopped because the build was cancelled.", token)
+    {
+        Executable = executable;
+        ExitCode = exitCode;
+    }
+
+    /// <summary>The executable that was stopped.</summary>
+    public string Executable { get; }
+
+    /// <summary>Its exit code after the kill.</summary>
+    public int ExitCode { get; }
 }

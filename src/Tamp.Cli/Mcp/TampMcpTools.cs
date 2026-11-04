@@ -65,11 +65,15 @@ internal sealed class TampMcpTools
             .ToList();
         var blocked = _lastRunEvents.Any(e => e.Type == BuildEventTypes.GateEvaluated
             && e.Payload is GateEvaluatedPayload g && g.Blocks);
+        // #125: succeeded | failed | cancelled, plus why for an interrupted run.
+        var build = _lastRunEvents.LastOrDefault(e => e.Type == BuildEventTypes.BuildFinished)?.Payload as BuildFinishedPayload;
 
         return JsonSerializer.Serialize(new
         {
             target,
             exitCode = exit,
+            status = build?.Status,
+            reason = build?.Reason,
             blockedByCapability = blocked,
             targets = finished,
             stderr = string.IsNullOrWhiteSpace(stderr) ? null : stderr.Trim(),

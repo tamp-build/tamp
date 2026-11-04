@@ -10,7 +10,17 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ### Added
 
+- **Build-wide cancellation and orderly interrupts** ([#125](https://github.com/tamp-build/tamp/issues/125), part 1). `tamp` now handles Ctrl+C, SIGTERM and SIGHUP itself instead of being killed mid-build:
+  - The first signal cancels the new **`TampBuild.BuildCancellation`** token (also passed to the new `Executes(async ct => ...)` overloads) and **`ProcessRunner` kills the running tool's whole process tree** and starts nothing new.
+  - The running target finishes with the new status **`cancelled`** (`reason: "signal: SIGINT"`; no remedy, no failure handlers), later targets are `not_run`, and `AssuredAfterFailure` cleanup targets still run with a fresh token that cancels when the shutdown grace period ends (default 10 s, `--shutdown-timeout <seconds>` / `TAMP_SHUTDOWN_TIMEOUT`).
+  - `build.finished` reports `status: "cancelled"`, `reason` and a `cancelled` count, and **the exit code is `128 + signal` on every OS** (130 SIGINT, 143 SIGTERM, 129 SIGHUP).
+  - A second signal, or the grace period running out, forces the exit after killing child process trees.
+  - Also: `ProcessCancelledException`, `ExecutionResult.InterruptSignal`, `IBuildReporter.OnTargetCancelled` (defaults to `OnTargetNotRun`), the `tamp mcp` run summary's `status` / `reason`, and the `cancelled` ADR-0018 outcome. Additive; the event schema stays `1.0`.
 - **`service.ready` / `service.stopped` events for long-running services** ([#124](https://github.com/tamp-build/tamp/issues/124)). A target that starts a dev server, emulator or other long-running process can now say when it is usable (`kind`, `url`, optional `port`, `pid`, `processStartTime`, `readinessProbe`, `statePath`) and when and why it stopped (`reason`: `requested` | `signal` | `exited` | `timeout`, plus optional `pid`, `exitCode`, `durationMs`). The reason lets consumers tell a deliberate shutdown from a failure: a killed service reports a non-zero `tool.exited` code even when nothing went wrong. Emitted with `BuildEvents.ServiceReady(...)` / `BuildEvents.ServiceStopped(...)`, which can share the service's `tool.invoked` command span; `url` and `readinessProbe` are scrubbed through the redaction table. Additive: the schema version stays `1.0`. See [docs/agent-first.md](docs/agent-first.md#long-running-services).
+
+### Changed
+
+- Event sinks are now written under a lock, so an event emitted off the build thread (a forced exit) can't interleave with the main loop's.
 
 ## [1.17.6] — 2026-11-02 — `tamp init` scaffolds current Tamp; Windows shim fix
 

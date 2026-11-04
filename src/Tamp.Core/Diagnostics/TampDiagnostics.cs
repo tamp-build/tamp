@@ -171,6 +171,7 @@ public static class TampDiagnostics
         public const string OutcomeFailure = "failure";
         public const string OutcomeSkipped = "skipped";
         public const string OutcomeNotRun = "not_run";
+        public const string OutcomeCancelled = "cancelled";
     }
 
     /// <summary>

@@ -99,6 +99,10 @@ has always held for the default `Fatal` mode. `FailureMode.Continue` also **fail
 (records the target `Failed`, exits non-zero); it runs the *remaining* work but does **not** swallow
 the failure (fixed in 1.15.0 — before, a `Continue` failure could report `Done` + exit 0).
 
+**An interrupted build exits `128 + signal`**, on every OS: **130** (Ctrl+C / SIGINT), **143** (SIGTERM, e.g. a
+CI cancel), **129** (SIGHUP, terminal closed). Those codes never mean a target failed; `build.finished` says
+`status: "cancelled"` with the signal in `reason`. See [Interrupts](#interrupts-ctrlc-sigterm-sighup).
+
 **Footgun:** piping or backgrounding the build can replace tamp's exit code with the pipe's —
 `tamp Ci | tail`, `tamp Ci &`, or a CI wrapper reading the wrong process's status will see `0`
 even on failure. Read the exit code from `tamp` **directly**, or — more robustly for automation —
@@ -115,6 +119,34 @@ declarative form; when a body must interleave a dispatch with other work, use
 the dispatch now emits canonical `tool.invoked` / `tool.exited` events (a bare
 `ProcessRunner.Execute` used to be invisible on `--events`), and a target that finishes green
 *despite* a non-zero tool exit raises a `tamp.tool.nonzero_ignored` note on the stream.
+
+## Interrupts (Ctrl+C, SIGTERM, SIGHUP)
+
+`tamp` handles interrupts itself, so an interrupted build stops in an orderly way and says so on the stream:
+
+1. **The first signal cancels the build.** `TampBuild.BuildCancellation` is cancelled. `ProcessRunner` kills the
+   running tool's whole process tree (its own children too), and starts nothing new.
+2. **The running target finishes `cancelled`**, with `reason: "signal: SIGINT"` (no remedy, no failure handlers:
+   nothing failed). Targets after it are `not_run` (`build cancelled (signal: SIGINT)`).
+3. **Cleanup targets still run.** `AssuredAfterFailure` targets run as they do after a failure, but with a
+   **fresh** token that cancels when the shutdown grace period ends (default **10 s**; `--shutdown-timeout
+   <seconds>` / `TAMP_SHUTDOWN_TIMEOUT`). A cleanup target cut off by that is `cancelled`; one that genuinely
+   fails is still `failure`.
+4. **`build.finished`** is `status: "cancelled"`, `reason: "signal: SIGINT"`, `cancelled: <count>`, and the exit
+   code is 128 + signal (above).
+5. **A second signal, or the grace period running out, forces the exit:** child process trees are killed,
+   `build.finished` is recorded with `reason: "...; forced exit"`, and the process exits at once.
+
+Target bodies get the token as a parameter, or read it ambiently:
+
+```csharp
+Target Smoke => _ => _.Executes(async ct => await http.GetAsync(url, ct));   // stops promptly on Ctrl+C
+// in a helper: await Task.Delay(delay, TampBuild.BuildCancellation);
+```
+
+It flows like `BuildEvents`, through the target's async continuations but not into threads a target starts
+itself. Outside a run it is `CancellationToken.None`. `IBuildReporter.OnTargetCancelled` reports a cancelled
+target; by default it forwards to `OnTargetNotRun`, so existing reporters keep working.
 
 ## Long-running services
 

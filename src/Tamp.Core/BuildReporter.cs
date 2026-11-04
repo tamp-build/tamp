@@ -41,6 +41,12 @@ public interface IBuildReporter
     /// <summary>Called when a target wasn't run at all (upstream failure, build aborted).</summary>
     void OnTargetNotRun(string name, string reason);
 
+    /// <summary>
+    /// Called when a target was running when the build was interrupted (#125); <paramref name="reason"/> names the
+    /// signal. Defaults to <see cref="OnTargetNotRun"/> so existing reporters keep working.
+    /// </summary>
+    void OnTargetCancelled(string name, TimeSpan duration, string reason) => OnTargetNotRun(name, reason);
+
     void OnBuildEnd(string status, string? firstFailedTarget, int exitCode, TimeSpan totalDuration);
 }
 

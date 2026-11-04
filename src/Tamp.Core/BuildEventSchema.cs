@@ -100,6 +100,13 @@ public static class BuildEventStatus
     public const string Failure = "failure";
     public const string Skipped = "skipped";
     public const string NotRun = "not_run";
+
+    /// <summary>
+    /// The build was interrupted (Ctrl+C, SIGTERM, SIGHUP) while this target ran, or, on
+    /// <see cref="BuildFinishedPayload.Status"/>, the build as a whole was (#125). Distinct from
+    /// <see cref="Failure"/>: nothing the target did failed. The reason names the signal.
+    /// </summary>
+    public const string Cancelled = "cancelled";
 }
 
 /// <summary>

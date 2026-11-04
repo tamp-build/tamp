@@ -51,6 +51,9 @@ internal sealed class ReporterProjectionSink : IBuildEventSink
                     case BuildEventStatus.NotRun:
                         _reporter.OnTargetNotRun(p.Target, p.Reason ?? string.Empty);
                         break;
+                    case BuildEventStatus.Cancelled:
+                        _reporter.OnTargetCancelled(p.Target, MsToSpan(p.DurationMs), p.Reason ?? string.Empty);
+                        break;
                 }
                 break;
 

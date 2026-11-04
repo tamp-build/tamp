@@ -76,6 +76,16 @@ public sealed class Executor
     private string? _currentLogPath;       // worktree-rel path of the current target's log (capture on + ran)
     // #23: reproduce command per failed target, for the compact failure summary.
     private readonly Dictionary<string, string> _failureReproduce = new(StringComparer.Ordinal);
+    // #125: interrupts. Signal handling is on for `tamp` runs (TampBuild passes handleSignals) and off for an
+    // Executor constructed directly (tests), which can still interrupt through BuildInterrupt.Active.
+    private readonly bool _handleSignals;
+    private readonly TimeSpan _shutdownTimeout;
+    private BuildInterrupt? _interrupt;
+    // Sinks assume one writer; ambient events may now come from other threads (a forced exit, later ManagedProcess).
+    private readonly object _emitLock = new();
+
+    /// <summary>Test seam (#125): replaces <see cref="Environment.Exit"/> for a forced exit.</summary>
+    internal Action<int>? ForcedExitOverride { get; set; }
 
     public Executor(
         TargetGraph graph,
@@ -93,8 +103,12 @@ public sealed class Executor
         IReadOnlyList<string>? ruleFilters = null,
         bool cacheAdvice = false,
         AbsolutePath? hashCachePath = null,
-        bool captureLogs = false)
+        bool captureLogs = false,
+        bool handleSignals = false,
+        TimeSpan? shutdownTimeout = null)
     {
+        _handleSignals = handleSignals;
+        _shutdownTimeout = shutdownTimeout ?? BuildInterrupt.DefaultGracePeriod;
         _capabilityMode = capabilityMode;
         _allowSideEffects = allowSideEffects;
         _runOnly = runOnly;
@@ -171,6 +185,34 @@ public sealed class Executor
     }
 
     /// <summary>Emit a failure target.finished with a structured remedy (reproduce + hint + coarse class) and InputsHash.</summary>
+    /// <summary>
+    /// #125: whether the current target's non-success counts as cancelled. A normal target interrupted mid-run is
+    /// cancelled whatever it threw (its tool was killed, or saw the signal); a cleanup target running after the
+    /// interrupt is cancelled only by its own token running out, and can still genuinely fail.
+    /// </summary>
+    private bool IsCancelledTarget(bool isCleanupAfterInterrupt, Exception? ex)
+    {
+        if (_interrupt is not { } interrupt) return false;
+        if (!isCleanupAfterInterrupt) return interrupt.IsInterrupted;
+        return ex is OperationCanceledException && interrupt.Token.IsCancellationRequested;
+    }
+
+    /// <summary>#125: the target was running when the build was interrupted.</summary>
+    private void EmitTargetCancelled(TargetSpec spec, string targetSpanId, TimeSpan elapsed, string reason, IReadOnlyList<string>? outputTail)
+    {
+        Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
+            new TargetFinishedPayload
+            {
+                Target = spec.Name,
+                Status = BuildEventStatus.Cancelled,
+                DurationMs = elapsed.TotalMilliseconds,
+                Reason = reason,
+                OutputTail = outputTail,
+                InputsHash = _currentInputsHash,
+                LogPath = _currentLogPath,
+            });
+    }
+
     private void EmitTargetFailure(TargetSpec spec, string targetSpanId, TimeSpan elapsed, string reason, bool isRequiresFailure, IReadOnlyList<string>? outputTail)
     {
         var reproduce = ReproduceCommand(spec.Name);
@@ -324,6 +366,11 @@ public sealed class Executor
 
     /// <summary>Emit one canonical <see cref="BuildEvent"/> to the fan-out sink.</summary>
     private void Emit(string type, string? targetId, string spanId, string? parentSpanId, BuildEventPayload payload)
+    {
+        lock (_emitLock) EmitUnlocked(type, targetId, spanId, parentSpanId, payload);
+    }
+
+    private void EmitUnlocked(string type, string? targetId, string spanId, string? parentSpanId, BuildEventPayload payload)
         => _sink.Emit(new BuildEvent
         {
             Type = type,
@@ -517,6 +564,21 @@ public sealed class Executor
                 EnforcementMode = _capabilityMode.ToString().ToLowerInvariant(),
             });
 
+        // #125: the build's interrupt state. A forced exit (second signal, or the grace period running out) records
+        // build.finished itself, since the main loop may be stuck in a target that ignores its token.
+        using var interrupt = new BuildInterrupt(_shutdownTimeout, _redactedOutput, _handleSignals,
+            onForcedExit: (reason, exitCode) => Emit(BuildEventTypes.BuildFinished, targetId: null, spanId: _buildSpanId, parentSpanId: null,
+                new BuildFinishedPayload
+                {
+                    Status = BuildEventStatus.Cancelled,
+                    DurationMs = buildSw.Elapsed.TotalMilliseconds,
+                    ExitCode = exitCode,
+                    Reason = $"{reason}; forced exit",
+                }),
+            exit: ForcedExitOverride);
+        _interrupt = interrupt;
+        using var interruptScope = interrupt.Activate();
+
         // Activate the ambient emitter (#13) so target bodies / helpers can emit
         // diagnostic.emitted / artifact.produced (#12) parented to the current target span.
         using var ambientScope = BuildEvents.Activate(new BuildEventScope((type, spanId, payload) =>
@@ -565,6 +627,19 @@ public sealed class Executor
                 if (_currentWouldSkip == true)
                     _log.WriteRaw($"==> {spec.Name} [cache-advice] inputs unchanged — would skip (advisory; still running)");
             }
+
+            // #125: after an interrupt, only AssuredAfterFailure (cleanup) targets run, each with a fresh token that
+            // cancels when the shutdown grace period ends.
+            if (interrupt.IsInterrupted && !spec.AssuredAfterFailure)
+            {
+                var notRunReason = $"build cancelled ({interrupt.Reason})";
+                _log.WriteRaw($"==> {spec.Name} (not run: {notRunReason})");
+                Emit(BuildEventTypes.TargetFinished, spec.Name, targetSpanId, _buildSpanId,
+                    new TargetFinishedPayload { Target = spec.Name, Status = BuildEventStatus.NotRun, Reason = notRunReason });
+                records.Add(TargetExecutionRecord.NotRun(spec.Name));
+                continue;
+            }
+            using var cleanupScope = interrupt.IsInterrupted ? interrupt.EnterCleanup() : null;
 
             // After a failure, only AssuredAfterFailure targets keep running.
             if (buildFailedAt.HasValue && !spec.AssuredAfterFailure)
@@ -771,11 +846,24 @@ public sealed class Executor
                         // suppress ProcessRunner's ambient emission for just this call — otherwise
                         // the declarative path would double-emit. Imperative and failure-handler
                         // dispatch are NOT suppressed, so they become visible on the stream.
-                        using (BuildEvents.SuppressToolEvents())
-                            exit = ProcessRunner.Execute(plan, capturingOutput, capturingOutput, sourceTargetName: spec.Name);
+                        try
+                        {
+                            using (BuildEvents.SuppressToolEvents())
+                                exit = ProcessRunner.Execute(plan, capturingOutput, capturingOutput, sourceTargetName: spec.Name);
+                        }
+                        catch (ProcessCancelledException pce)
+                        {
+                            // #125: killed because the build was cancelled; close the command span, then let the
+                            // target's cancellation handling below take it.
+                            Emit(BuildEventTypes.ToolExited, spec.Name, cmdSpanId, targetSpanId,
+                                new ToolExitedPayload { Tool = plan.Executable, ExitCode = pce.ExitCode, DurationMs = cmdSw.Elapsed.TotalMilliseconds });
+                            throw;
+                        }
                         cmdSw.Stop();
                         Emit(BuildEventTypes.ToolExited, spec.Name, cmdSpanId, targetSpanId,
                             new ToolExitedPayload { Tool = plan.Executable, ExitCode = exit, DurationMs = cmdSw.Elapsed.TotalMilliseconds });
+                        if (exit != 0 && IsCancelledTarget(cleanupScope is not null, null))
+                            throw new OperationCanceledException($"{plan.Executable} exited {exit} after the build was cancelled.", interrupt.Token);
                         if (exit != 0)
                         {
                             _log.WriteRaw($"==> {spec.Name} FAILED (exit {exit})");
@@ -838,6 +926,18 @@ public sealed class Executor
                     DiagnosticsProjection.AnnotateTargetTerminal(targetSpan, spec, new TargetTerminalTelemetry(sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeSuccess, null));
                 }
             }
+            catch (Exception ex) when (IsCancelledTarget(cleanupScope is not null, ex))
+            {
+                // #125: interrupted while running (or a cleanup target that ran out of grace period). Not a failure:
+                // no failure handlers, no remedy; the build exits 128 + signal.
+                sw.Stop();
+                var cancelReason = cleanupScope is not null ? $"shutdown grace period ran out ({interrupt.Reason})" : interrupt.Reason;
+                _log.WriteRaw($"==> {spec.Name} CANCELLED ({cancelReason})");
+                capturingOutput.FlushPendingLine();
+                EmitTargetCancelled(spec, targetSpanId, sw.Elapsed, cancelReason, RedactedTail(outputBuffer));
+                records.Add(TargetExecutionRecord.Cancelled(spec.Name, sw.Elapsed, cancelReason));
+                DiagnosticsProjection.AnnotateTargetTerminal(targetSpan, spec, new TargetTerminalTelemetry(sw.Elapsed, swStartTicks, allocAtStart, workingSetAtStart, gen0AtStart, gen1AtStart, gen2AtStart, cpuAtStart, commandsForThisTarget, TampDiagnostics.Tags.OutcomeCancelled, cancelReason));
+            }
             catch (Exception ex) when (spec.FailureMode == FailureMode.Continue)
             {
                 // #4: an exception under FailureMode.Continue is a failure that must not be masked
@@ -887,12 +987,15 @@ public sealed class Executor
         // target failed without aborting (continueFailedAt). Both fail the exit code + reporting;
         // only buildFailedAt drives the abort (NotRun) path above.
         var effectiveFailedAt = buildFailedAt ?? continueFailedAt;
-        WriteBuildSummary(records, buildSw.Elapsed, effectiveFailedAt?.Name);
+        WriteBuildSummary(records, buildSw.Elapsed, effectiveFailedAt?.Name, interrupt.IsInterrupted ? interrupt.Reason : null);
         WriteCompactFailureSummary(records);
         _log.Flush();
 
         var traversed = records.Count(r => r.Status is not TargetStatus.NotRun);
-        var buildExitCode = effectiveFailedAt?.ExitCode ?? 0;
+        // #125: an interrupted build exits 128 + signal, even if a target had already failed (the failure is still
+        // on the stream and in the summary).
+        var interrupted = interrupt.IsInterrupted;
+        var buildExitCode = interrupted ? interrupt.ExitCode : effectiveFailedAt?.ExitCode ?? 0;
         var buildEndTicks = Stopwatch.GetTimestamp();
         var buildDurationNs = (long)((buildEndTicks - buildSwStartTicks) * 1_000_000_000.0 / Stopwatch.Frequency);
 
@@ -903,10 +1006,11 @@ public sealed class Executor
         var failed = records.Count(r => r.Status == TargetStatus.Failed);
         var skippedCount = records.Count(r => r.Status == TargetStatus.Skipped);
         var notRun = records.Count(r => r.Status == TargetStatus.NotRun);
+        var cancelledCount = records.Count(r => r.Status == TargetStatus.Cancelled);
 
         // ── Diagnostics: close out the root build span + counters via the projection (#0c).
-        var buildOutcome = buildExitCode == 0
-            ? TampDiagnostics.Tags.OutcomeSuccess
+        var buildOutcome = interrupted ? TampDiagnostics.Tags.OutcomeCancelled
+            : buildExitCode == 0 ? TampDiagnostics.Tags.OutcomeSuccess
             : TampDiagnostics.Tags.OutcomeFailure;
 
         DiagnosticsProjection.AnnotateBuildEnd(buildSpan, new BuildEndTelemetry(
@@ -949,7 +1053,9 @@ public sealed class Executor
         Emit(BuildEventTypes.BuildFinished, targetId: null, spanId: _buildSpanId, parentSpanId: null,
             new BuildFinishedPayload
             {
-                Status = buildExitCode == 0 ? "succeeded" : "failed",
+                Status = interrupted ? BuildEventStatus.Cancelled : buildExitCode == 0 ? "succeeded" : "failed",
+                Reason = interrupted ? interrupt.Reason : null,
+                Cancelled = cancelledCount,
                 DurationMs = buildSw.Elapsed.TotalMilliseconds,
                 ExitCode = buildExitCode,
                 FirstFailedTarget = effectiveFailedAt?.Name,
@@ -967,6 +1073,7 @@ public sealed class Executor
             ExitCode = buildExitCode,
             TargetsTraversed = traversed,
             FailedTarget = effectiveFailedAt?.Name,
+            InterruptSignal = interrupted ? interrupt.Signal : null,
             FailureHandlersInvoked = handlersInvoked,
             SkippedTargets = skipped,
             ExecutionRecords = records,
@@ -1048,7 +1155,7 @@ public sealed class Executor
         }
     }
 
-    private void WriteBuildSummary(IReadOnlyList<TargetExecutionRecord> records, TimeSpan duration, string? failedTargetName)
+    private void WriteBuildSummary(IReadOnlyList<TargetExecutionRecord> records, TimeSpan duration, string? failedTargetName, string? cancelledReason = null)
     {
         if (records.Count == 0) return;
 
@@ -1066,6 +1173,7 @@ public sealed class Executor
                 TargetStatus.Failed => "✗",
                 TargetStatus.Skipped => "·",
                 TargetStatus.NotRun => "—",
+                TargetStatus.Cancelled => "⊘",
                 _ => "?",
             };
             var status = $"{statusGlyph} {r.Status}";
@@ -1077,7 +1185,12 @@ public sealed class Executor
         _log.WriteRaw($"  {"".PadRight(nameWidth)}   {"".PadRight(statusWidth + 2)}   ─────");
         _log.WriteRaw($"  {"Total".PadRight(nameWidth)}   {"".PadRight(statusWidth + 2)}   {FormatDuration(duration)}");
 
-        if (failedTargetName is not null)
+        if (cancelledReason is not null)
+        {
+            _log.WriteRaw();
+            _log.WriteRaw($"BUILD CANCELLED — {cancelledReason}" + (failedTargetName is null ? "" : $" (first failed target: {failedTargetName})"));
+        }
+        else if (failedTargetName is not null)
         {
             _log.WriteRaw();
             _log.WriteRaw($"BUILD FAILED — first failed target: {failedTargetName}");
@@ -1128,9 +1241,11 @@ public sealed record TargetExecutionRecord
         => new() { Name = name, Status = TargetStatus.Skipped, FailureReason = reason };
     public static TargetExecutionRecord NotRun(string name)
         => new() { Name = name, Status = TargetStatus.NotRun };
+    public static TargetExecutionRecord Cancelled(string name, TimeSpan duration, string reason)
+        => new() { Name = name, Status = TargetStatus.Cancelled, Duration = duration, FailureReason = reason };
 }
 
-public enum TargetStatus { Done, Failed, Skipped, NotRun }
+public enum TargetStatus { Done, Failed, Skipped, NotRun, Cancelled }
 
 /// <summary>Outcome of a single executor run.</summary>
 public sealed record ExecutionResult
@@ -1140,6 +1255,8 @@ public sealed record ExecutionResult
     public int TargetsTraversed { get; init; }
     public int CommandPlansPrinted { get; init; }
     public string? FailedTarget { get; init; }
+    /// <summary>#125: the signal that interrupted the run (e.g. <c>SIGINT</c>), or null if it wasn't interrupted.</summary>
+    public string? InterruptSignal { get; init; }
     public IReadOnlyList<string> FailureHandlersInvoked { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> SkippedTargets { get; init; } = Array.Empty<string>();
     public IReadOnlyList<TargetExecutionRecord> ExecutionRecords { get; init; } = Array.Empty<TargetExecutionRecord>();
