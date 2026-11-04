@@ -9,6 +9,7 @@ using Tamp.Conformance.Quality;
 using Tamp.Ingest.V1;
 using Tamp.Sarif;
 using Tamp.Sbom;
+using FindingsIngest;
 
 // tamp-core dogfood: push our own build evidence to tamp-findings and gate on the result.
 //
@@ -63,7 +64,7 @@ const int RetryMaxAttempts = 4; // transient-retry budget: 1 try + 3 retries; ba
 var cmd = args.Length > 0 ? args[0] : "ingest";
 var url = Env("FINDINGS_URL", "https://tamp-findings.brewingcoder.com").TrimEnd('/');
 var token = Env("FINDINGS_TOKEN");
-if (token.Length == 0) { Console.Error.WriteLine("FATAL: FINDINGS_TOKEN not set"); return 2; }
+if (token.Length == 0) { await Console.Error.WriteLineAsync("FATAL: FINDINGS_TOKEN not set"); return 2; }
 var projectId = Env("FINDINGS_PROJECT_ID", "44f1f80c-976f-4233-89fc-64a6de33520b");
 var repoRoot = Env("REPO_ROOT", Directory.GetCurrentDirectory());
 
@@ -83,7 +84,7 @@ if (cmd == "ingest") return await IngestAsync();
 if (cmd == "quality") return await QualityAsync();
 if (cmd == "posture") return await PostureAsync();
 if (cmd == "generate") return await GenerateAsync();
-Console.Error.WriteLine($"unknown command '{cmd}' (expected: ingest | quality | posture | gate | generate)");
+await Console.Error.WriteLineAsync($"unknown command '{cmd}' (expected: ingest | quality | posture | gate | generate)");
 return 2;
 
 async Task<int> GateAsync()
@@ -94,7 +95,7 @@ async Task<int> GateAsync()
         var r = await http.GetAsync(q);
         return ((int)r.StatusCode, await r.Content.ReadAsStringAsync());
     }, "GET gate");
-    if (code is not (200 or 201)) { Console.Error.WriteLine($"gate query {code}: {Trunc(body)}"); return 2; }
+    if (code is not (200 or 201)) { await Console.Error.WriteLineAsync($"gate query {code}: {Trunc(body)}"); return 2; }
     using var doc = JsonDocument.Parse(body);
     var root = doc.RootElement;
     int Blk(string n) => root.TryGetProperty(n, out var e) && e.TryGetInt32(out var i) ? i : -1;
@@ -113,7 +114,7 @@ async Task<int> GateAsync()
         }
     Console.WriteLine($"\nblocking={blocking} failed={failed} unknown={unknown}");
     if (blocking == 0) { Console.WriteLine("CLEAR TO SHIP ✅"); return 0; }
-    Console.Error.WriteLine($"::error::BLOCKED — {blocking} gate(s) blocking (failed={failed}, unknown={unknown}). Refusing to ship.");
+    await Console.Error.WriteLineAsync($"::error::BLOCKED — {blocking} gate(s) blocking (failed={failed}, unknown={unknown}). Refusing to ship.");
     return 1;
 }
 
@@ -153,7 +154,7 @@ async Task<int> IngestAsync()
         {
             var (sbomToLoad, licResolved) = ResolveLicenses(sbomPath);
             var shipping = ShippingClosure(repoRoot);
-            var bom = SbomReader.Parse(File.ReadAllText(sbomToLoad));
+            var bom = SbomReader.Parse(await File.ReadAllTextAsync(sbomToLoad));
             var sbomReq = CycloneDxSbomMapper.BuildRequest(hier, bom,
                 toolName: "CycloneDX", toolVersion: "6.2.0",
                 metadataTools: new[] { new SbomMetadataTool { Vendor = "CycloneDX", Name = "CycloneDX module for .NET", Version = "6.2.0" } },
@@ -169,23 +170,23 @@ async Task<int> IngestAsync()
             // freshness reads real values, not "Not assessed". findings only enriches on this call.
             var (ec, er) = await PostStringAsync($"/sbom-components/enrich-versions?snapshotId={sbomSnapshotId}", "", "application/json");
             if (ec is 200 or 201) Console.WriteLine($"SBOM-ENR → {Trunc(er)}");
-            else Console.Error.WriteLine($"SBOM-ENR ⚠ {ec} {Trunc(er)}");
+            else await Console.Error.WriteLineAsync($"SBOM-ENR ⚠ {ec} {Trunc(er)}");
         }
-        catch (Exception ex) { Console.Error.WriteLine($"SBOM     ✗ {Trunc(ex.Message)}"); errors++; }
-    else Console.Error.WriteLine($"SBOM     ⚠ missing {sbomPath}");
+        catch (Exception ex) { await Console.Error.WriteLineAsync($"SBOM     ✗ {Trunc(ex.Message)}"); errors++; }
+    else await Console.Error.WriteLineAsync($"SBOM     ⚠ missing {sbomPath}");
 
     // 2) SAST (opengrep SARIF)
     var sastPath = Path.Combine(evidence, "opengrep.sarif");
     if (File.Exists(sastPath))
         try
         {
-            var sarif = SarifReader.LoadFromFile(AbsolutePath.Create(sastPath));
+            var sarif = await SarifReader.LoadFromFileAsync(AbsolutePath.Create(sastPath));
             var r = await RetryOnExAsync(() => ingest.PostFindingsAsync(hier, ScannerKind.OpenGrep, sarif), "SAST");
             Console.WriteLine($"SAST     → cv={r.ComponentVersionId} inserted={r.FindingsInserted} (opengrep)");
             receipts.Add(Receipt(ScannerKind.OpenGrep, "opengrep", "1.x", r.FindingsInserted));
         }
-        catch (Exception ex) { Console.Error.WriteLine($"SAST     ✗ {Trunc(ex.Message)}"); errors++; }
-    else Console.Error.WriteLine($"SAST     ⚠ missing {sastPath}");
+        catch (Exception ex) { await Console.Error.WriteLineAsync($"SAST     ✗ {Trunc(ex.Message)}"); errors++; }
+    else await Console.Error.WriteLineAsync($"SAST     ⚠ missing {sastPath}");
 
     // 3) Secrets (trufflehog — record the scan ran; verified secrets fail the workflow step upstream)
     try
@@ -199,7 +200,7 @@ async Task<int> IngestAsync()
         Console.WriteLine($"SECRETS  → cv={r.ComponentVersionId} inserted={r.FindingsInserted} closed={r.FindingsClosed} (trufflehog)");
         receipts.Add(Receipt(ScannerKind.TruffleHog, "trufflehog", "3.x", 0));
     }
-    catch (Exception ex) { Console.Error.WriteLine($"SECRETS  ✗ {Trunc(ex.Message)}"); errors++; }
+    catch (Exception ex) { await Console.Error.WriteLineAsync($"SECRETS  ✗ {Trunc(ex.Message)}"); errors++; }
 
     // 4) Coverage (raw cobertura → /ingest/coverage/raw)
     var covPath = FirstExisting(
@@ -210,10 +211,10 @@ async Task<int> IngestAsync()
     {
         var (code, resp) = await PostFileRawAsync("/ingest/coverage/raw", covPath, "application/xml", extra: "&toolVersion=5.5.1");
         if (code is 200 or 201) { Console.WriteLine($"COVERAGE → {Trunc(resp)}"); postedCoverage = true; }
-        else { Console.Error.WriteLine($"COVERAGE ✗ {code} {Trunc(resp)}"); errors++; }
+        else { await Console.Error.WriteLineAsync($"COVERAGE ✗ {code} {Trunc(resp)}"); errors++; }
         receipts.Add(Receipt(ScannerKind.Coverlet, "reportgenerator", "5.5.1", 0));
     }
-    else Console.Error.WriteLine("COVERAGE ⚠ no cobertura found");
+    else await Console.Error.WriteLineAsync("COVERAGE ⚠ no cobertura found");
 
     // 5) Test-results (every .trx → /ingest/test-results/raw; findings replaces by assembly)
     var trxDir = Path.Combine(evidence, "trx");
@@ -224,13 +225,13 @@ async Task<int> IngestAsync()
         foreach (var f in trx)
         {
             var (code, resp) = await PostFileRawAsync("/ingest/test-results/raw", f, "application/xml");
-            if (code is 200 or 201) ok++; else { bad++; Console.Error.WriteLine($"  trx ✗ {code} {Path.GetFileName(f)}: {Trunc(resp)}"); }
+            if (code is 200 or 201) ok++; else { bad++; await Console.Error.WriteLineAsync($"  trx ✗ {code} {Path.GetFileName(f)}: {Trunc(resp)}"); }
         }
         Console.WriteLine($"TESTS    → {ok}/{trx.Length} trx posted (replace-by-assembly)");
         if (bad > 0) errors++;
         postedTests = ok > 0;
     }
-    else Console.Error.WriteLine($"TESTS    ⚠ no trx under {trxDir}");
+    else await Console.Error.WriteLineAsync($"TESTS    ⚠ no trx under {trxDir}");
 
     // 5b) SCA vulnerabilities (grype against the SBOM) → /sbom-vulnerabilities/upsert + a Grype
     // scan-run receipt whose Notes carry the advisory-DB provenance. This is what makes "0 CVEs"
@@ -252,9 +253,9 @@ async Task<int> IngestAsync()
                 FindingsCount = vulns.Count, ToolName = "grype", ToolVersion = toolVer, Notes = dbNotes,
             });
         }
-        catch (Exception ex) { Console.Error.WriteLine($"SCA      ✗ {Trunc(ex.Message)}"); errors++; }
-    else if (sbomSnapshotId is null) Console.Error.WriteLine("SCA      ⚠ no SBOM snapshot id — skipping vuln upsert");
-    else Console.Error.WriteLine($"SCA      ⚠ missing {grypePath} — no SCA scan to ingest");
+        catch (Exception ex) { await Console.Error.WriteLineAsync($"SCA      ✗ {Trunc(ex.Message)}"); errors++; }
+    else if (sbomSnapshotId is null) await Console.Error.WriteLineAsync("SCA      ⚠ no SBOM snapshot id — skipping vuln upsert");
+    else await Console.Error.WriteLineAsync($"SCA      ⚠ missing {grypePath} — no SCA scan to ingest");
 
     // 6) Conformance — fetch authoritative ruleset from findings, evaluate HEAD (deterministic), forward
     try
@@ -267,7 +268,7 @@ async Task<int> IngestAsync()
         var ndjson = BuildConformanceNdjson(result, commit);
         var (code, resp) = await PostStringAsync("/ingest/conformance", ndjson, "application/x-ndjson");
         if (code is 200 or 201) Console.WriteLine($"CONFORM  → {result.Results.Count} verdicts (pass={by.GetValueOrDefault("pass")} fail={by.GetValueOrDefault("fail")} unknown={by.GetValueOrDefault("unknown")}) → {Trunc(resp)}");
-        else { Console.Error.WriteLine($"CONFORM  ✗ {code} {Trunc(resp)}"); errors++; }
+        else { await Console.Error.WriteLineAsync($"CONFORM  ✗ {code} {Trunc(resp)}"); errors++; }
 
         // Surface each non-pass verdict in the log — the summary count alone ("fail=10") doesn't say
         // WHICH ADR rules fail, so the dogfood gap stays invisible. Print fails/errors with location +
@@ -281,7 +282,7 @@ async Task<int> IngestAsync()
             Console.WriteLine($"  CONFORM {(r.Verdict == "error" ? "‼" : "✗")} {r.AdrRef}/{r.RuleId}{loc} — {why}");
         }
     }
-    catch (Exception ex) { Console.Error.WriteLine($"CONFORM  ✗ {Trunc(ex.Message)}"); errors++; }
+    catch (Exception ex) { await Console.Error.WriteLineAsync($"CONFORM  ✗ {Trunc(ex.Message)}"); errors++; }
 
     // 7) Scan-run receipts
     try
@@ -295,7 +296,7 @@ async Task<int> IngestAsync()
         Console.WriteLine($"RECEIPTS → {receipts.Count} posted, {rr.ReceiptsUpserted} upserted (componentVersion {rr.ComponentVersionId})");
         receiptsResp = rr;
     }
-    catch (Exception ex) { Console.Error.WriteLine($"RECEIPTS ✗ {Trunc(ex.Message)}"); errors++; }
+    catch (Exception ex) { await Console.Error.WriteLineAsync($"RECEIPTS ✗ {Trunc(ex.Message)}"); errors++; }
 
     // 8) Scan token usage — the deterministic conformance check spends NO model tokens, but we
     // report it (empty usage set) so the Costs page shows "scanned, 0 tokens" not a blank. Real
@@ -305,7 +306,7 @@ async Task<int> IngestAsync()
         await PostScanUsageAsync(Array.Empty<object>());
         Console.WriteLine("USAGE    → scan-usage reported (0 model tokens — conformance check is deterministic)");
     }
-    catch (Exception ex) { Console.Error.WriteLine($"USAGE    ✗ {Trunc(ex.Message)}"); errors++; }
+    catch (Exception ex) { await Console.Error.WriteLineAsync($"USAGE    ✗ {Trunc(ex.Message)}"); errors++; }
 
     // 9) Post, then verify (ingest-v1#12 / TFND-265). Read the commit back and confirm that what this run
     // posted actually landed, instead of trusting a 2xx. strata-home went four days without noticing
@@ -318,7 +319,7 @@ async Task<int> IngestAsync()
                 receiptsResp is null ? Array.Empty<ScannerKind>() : receipts.Select(r => r.Scanner).ToList(), receiptsResp);
             if (problems > 0) errors++;
         }
-        catch (Exception ex) { Console.Error.WriteLine($"VERIFY   ✗ {Trunc(ex.Message)}"); errors++; }
+        catch (Exception ex) { await Console.Error.WriteLineAsync($"VERIFY   ✗ {Trunc(ex.Message)}"); errors++; }
     else Console.WriteLine("VERIFY   ⚠ skipped (TAMP_VERIFY=0)");
 
     Console.WriteLine(errors == 0 ? "\nIngest complete ✅" : $"\nIngest completed with {errors} error(s) ⚠");
@@ -337,7 +338,7 @@ async Task<int> VerifyIngestAsync(
     var ev = await RetryOnExAsync(() => ingest.ReadBuildEvidenceAsync(commit, project: project, client: client), "VERIFY");
     if (ev is null)
     {
-        Console.Error.WriteLine($"VERIFY   ✗ commit {Short(commit)} is not visible to this token: nothing landed, or the token is scoped elsewhere");
+        await Console.Error.WriteLineAsync($"VERIFY   ✗ commit {Short(commit)} is not visible to this token: nothing landed, or the token is scoped elsewhere");
         return 1;
     }
 
@@ -345,7 +346,7 @@ async Task<int> VerifyIngestAsync(
     var b = ev.Builds.FirstOrDefault(x => x.Build.Flavor is null && x.Build.PullRequestRef is null);
     if (b is null)
     {
-        Console.Error.WriteLine($"VERIFY   ✗ commit {Short(commit)} has {ev.Builds.Count} build(s), none without a flavor/PR ref");
+        await Console.Error.WriteLineAsync($"VERIFY   ✗ commit {Short(commit)} has {ev.Builds.Count} build(s), none without a flavor/PR ref");
         return 1;
     }
 
@@ -387,9 +388,11 @@ async Task<int> VerifyIngestAsync(
         Console.WriteLine($"VERIFY   → {head}: {string.Join(", ", oks)} ✓ (all landed this run)");
         return 0;
     }
-    Console.Error.WriteLine($"VERIFY   ✗ {head}: {fails.Count} check(s) failed");
-    foreach (var f in fails) Console.Error.WriteLine($"  ✗ {f}");
-    if (oks.Count > 0) Console.Error.WriteLine($"  ✓ {string.Join(", ", oks)}");
+    // One write for the block rather than an awaited write per failed check.
+    var report = new StringBuilder().AppendLine($"VERIFY   ✗ {head}: {fails.Count} check(s) failed");
+    foreach (var f in fails) report.AppendLine($"  ✗ {f}");
+    if (oks.Count > 0) report.AppendLine($"  ✓ {string.Join(", ", oks)}");
+    await Console.Error.WriteAsync(report.ToString());
     return fails.Count;
 }
 
@@ -420,18 +423,18 @@ async Task<int> QualityAsync()
             var sonarFindings = new QualityAdapter(snap.ToSource()).Run().All;
             var (fc, fr) = await PostStringAsync("/ingest/findings", QualityEmit.FindingsBody(env, "SonarQube", sonarFindings), "application/json");
             if (fc is 200 or 201) Console.WriteLine($"QUAL-SQ  → {sonarFindings.Count} findings (projectKey={projectKey}) → {Trunc(fr)}");
-            else { Console.Error.WriteLine($"QUAL-SQ  ✗ {fc} {Trunc(fr)}"); errors++; }
+            else { await Console.Error.WriteLineAsync($"QUAL-SQ  ✗ {fc} {Trunc(fr)}"); errors++; }
             receipts.Add(new { scanner = "SonarQube", status = "Succeeded", startedAt = started, completedAt = DateTimeOffset.UtcNow, findingsCount = sonarFindings.Count, toolName = "SonarCloud", toolVersion = "cloud", notes = $"server={sonarUrl}; projectKey={projectKey}; branch={sonarBranch}; findings={sonarFindings.Count}" });
 
             var gate = snap.ToGateVerdict();
             var (gc, gr) = await PostStringAsync("/ingest/quality-gate", QualityEmit.QualityGateBody(env, gate), "application/json");
             if (gc is 200 or 201) Console.WriteLine($"QUAL-GATE→ status={gate.Status} → {Trunc(gr)}");
-            else { Console.Error.WriteLine($"QUAL-GATE✗ {gc} {Trunc(gr)}"); errors++; }
+            else { await Console.Error.WriteLineAsync($"QUAL-GATE✗ {gc} {Trunc(gr)}"); errors++; }
 
             coverageContribs.Add(new CoverageContribution("sonarqube", sonarFindings.Select(f => f.FilePath).Distinct().ToArray()));
         }
-        catch (Exception ex) { Console.Error.WriteLine($"QUAL-SQ  ✗ {Trunc(ex.Message)}"); errors++; }
-    else Console.Error.WriteLine("QUAL-SQ  ⚠ SONAR_TOKEN not set — skipping SonarCloud quality lane");
+        catch (Exception ex) { await Console.Error.WriteLineAsync($"QUAL-SQ  ✗ {Trunc(ex.Message)}"); errors++; }
+    else await Console.Error.WriteLineAsync("QUAL-SQ  ⚠ SONAR_TOKEN not set — skipping SonarCloud quality lane");
 
     // 2) Local Roslyn/SonarAnalyzer SARIF → findings batch (no gate; a local analyzer has none).
     var roslynDir = Env("ROSLYN_SARIF_DIR", Path.Combine(repoRoot, "artifacts", "security", "roslyn"));
@@ -441,12 +444,12 @@ async Task<int> QualityAsync()
             var roslynFindings = new QualityAdapter(RoslynSarifSource.FromDirectory(roslynDir, repoRoot)).Run().All;
             var (rc, rr) = await PostStringAsync("/ingest/findings", QualityEmit.FindingsBody(env, "Roslyn", roslynFindings), "application/json");
             if (rc is 200 or 201) Console.WriteLine($"QUAL-ROS → {roslynFindings.Count} findings ({roslynDir}) → {Trunc(rr)}");
-            else { Console.Error.WriteLine($"QUAL-ROS ✗ {rc} {Trunc(rr)}"); errors++; }
+            else { await Console.Error.WriteLineAsync($"QUAL-ROS ✗ {rc} {Trunc(rr)}"); errors++; }
             receipts.Add(new { scanner = "Roslyn", status = "Succeeded", startedAt = started, completedAt = DateTimeOffset.UtcNow, findingsCount = roslynFindings.Count, toolName = "SonarAnalyzer.CSharp", toolVersion = "roslyn", notes = $"local in-CI Roslyn analysis; profile=SonarWay; findings={roslynFindings.Count}" });
             coverageContribs.Add(new CoverageContribution("roslyn", EnumerateCsFiles(repoRoot)));
         }
-        catch (Exception ex) { Console.Error.WriteLine($"QUAL-ROS ✗ {Trunc(ex.Message)}"); errors++; }
-    else Console.Error.WriteLine($"QUAL-ROS ⚠ no SARIF dir {roslynDir} — skipping Roslyn quality lane");
+        catch (Exception ex) { await Console.Error.WriteLineAsync($"QUAL-ROS ✗ {Trunc(ex.Message)}"); errors++; }
+    else await Console.Error.WriteLineAsync($"QUAL-ROS ⚠ no SARIF dir {roslynDir} — skipping Roslyn quality lane");
 
     // 3) Analysis-coverage — only the producer can compute it (full checkout).
     try
@@ -455,9 +458,9 @@ async Task<int> QualityAsync()
         var (cc, cr) = await PostStringAsync("/ingest/analysis-coverage", QualityEmit.AnalysisCoverageBody(env, report), "application/json");
         var gaps = string.Join(",", report.Overall.LanguagesWithFootprintNoAnalyzer);
         if (cc is 200 or 201) Console.WriteLine($"QUAL-COV → {report.Languages.Count} langs, overall {report.Overall.PercentAnalyzed}% (gaps: {(gaps.Length == 0 ? "none" : gaps)}) → {Trunc(cr)}");
-        else { Console.Error.WriteLine($"QUAL-COV ✗ {cc} {Trunc(cr)}"); errors++; }
+        else { await Console.Error.WriteLineAsync($"QUAL-COV ✗ {cc} {Trunc(cr)}"); errors++; }
     }
-    catch (Exception ex) { Console.Error.WriteLine($"QUAL-COV ✗ {Trunc(ex.Message)}"); errors++; }
+    catch (Exception ex) { await Console.Error.WriteLineAsync($"QUAL-COV ✗ {Trunc(ex.Message)}"); errors++; }
 
     // 4) Quality scan-run receipts (SonarQube credits RanQuality+RanSast; Roslyn credits the same).
     if (receipts.Count > 0)
@@ -466,9 +469,9 @@ async Task<int> QualityAsync()
             var body = JsonSerializer.Serialize(new { client, project, component, componentKind = "solution", version, commitSha = commit, branch, receipts });
             var (pc, pr) = await PostStringAsync("/ingest/scan-runs", body, "application/json");
             if (pc is 200 or 201) Console.WriteLine($"QUAL-RCPT→ {receipts.Count} posted");
-            else { Console.Error.WriteLine($"QUAL-RCPT✗ {pc} {Trunc(pr)}"); errors++; }
+            else { await Console.Error.WriteLineAsync($"QUAL-RCPT✗ {pc} {Trunc(pr)}"); errors++; }
         }
-        catch (Exception ex) { Console.Error.WriteLine($"QUAL-RCPT✗ {Trunc(ex.Message)}"); errors++; }
+        catch (Exception ex) { await Console.Error.WriteLineAsync($"QUAL-RCPT✗ {Trunc(ex.Message)}"); errors++; }
 
     Console.WriteLine(errors == 0 ? "\nQuality lane complete ✅" : $"\nQuality lane completed with {errors} error(s) ⚠");
     return errors == 0 ? 0 : 1;
@@ -497,7 +500,7 @@ static string[] EnumerateCsFiles(string root)
 async Task<int> GenerateAsync()
 {
     var apiKey = Env("ANTHROPIC_API_KEY");
-    if (apiKey.Length == 0) { Console.Error.WriteLine("FATAL: ANTHROPIC_API_KEY not set (required for rule generation)"); return 2; }
+    if (apiKey.Length == 0) { await Console.Error.WriteLineAsync("FATAL: ANTHROPIC_API_KEY not set (required for rule generation)"); return 2; }
     var genModel = Env("GEN_MODEL_ID", "claude-opus-4-8");
     Console.WriteLine($"→ generate rules from ADRs via {genModel}  {client}/{project} commit={Short(commit)}\n");
 
@@ -514,7 +517,7 @@ async Task<int> GenerateAsync()
             var set = RuleGeneration.Generate(adrId, file, extractor, extractedBy: chat.ModelId);
             foreach (var r in set.Rules) all.Add(new AdrRuleWithRef { AdrRef = adrId, Rule = r });
         }
-        catch (Exception ex) { Console.Error.WriteLine($"  ADR {adrId}: extraction failed — {Trunc(ex.Message)}"); }
+        catch (Exception ex) { await Console.Error.WriteLineAsync($"  ADR {adrId}: extraction failed — {Trunc(ex.Message)}"); }
     }
     sw.Stop();
     Console.WriteLine($"Extracted {all.Count} rules from {adrs.Count} ADRs — {chat.InputTokens:N0} in / {chat.OutputTokens:N0} out over {chat.Calls} calls ({sw.Elapsed.TotalSeconds:N0}s)");
@@ -533,7 +536,7 @@ async Task<int> GenerateAsync()
         }});
         Console.WriteLine($"USAGE    → scan-usage reported ({chat.InputTokens:N0} in / {chat.OutputTokens:N0} out on {genModel})");
     }
-    catch (Exception ex) { Console.Error.WriteLine($"USAGE    ✗ {Trunc(ex.Message)}"); return 1; }
+    catch (Exception ex) { await Console.Error.WriteLineAsync($"USAGE    ✗ {Trunc(ex.Message)}"); return 1; }
     return 0;
 }
 
@@ -733,7 +736,7 @@ async Task<int> PostureAsync()
                           $"on project {pr.ProjectId} ({client}/{project}) ✅");
         return 0;
     }
-    catch (Exception ex) { Console.Error.WriteLine($"\nPOSTURE  ✗ {Trunc(ex.Message)}"); return 1; }
+    catch (Exception ex) { await Console.Error.WriteLineAsync($"\nPOSTURE  ✗ {Trunc(ex.Message)}"); return 1; }
 }
 
 // POST /ingest/scan-usage — token usage for a build's scan run (replace-on-ingest). Empty `usage`
@@ -1033,7 +1036,7 @@ static async Task<(int, string)> SendWithRetryAsync(Func<Task<(int, string)>> se
         if (attempt < RetryMaxAttempts)
         {
             var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
-            Console.Error.WriteLine($"  ⟳ {label}: transient {last.Item1} — retry {attempt}/{RetryMaxAttempts - 1} in {delay.TotalSeconds:N0}s");
+            await Console.Error.WriteLineAsync($"  ⟳ {label}: transient {last.Item1} — retry {attempt}/{RetryMaxAttempts - 1} in {delay.TotalSeconds:N0}s");
             await Task.Delay(delay);
         }
     }
@@ -1049,49 +1052,8 @@ static async Task<T> RetryOnExAsync<T>(Func<Task<T>> op, string label)
         catch (Exception ex) when (attempt < RetryMaxAttempts && IsTransientException(ex))
         {
             var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
-            Console.Error.WriteLine($"  ⟳ {label}: {Trunc(ex.Message)} — retry {attempt}/{RetryMaxAttempts - 1} in {delay.TotalSeconds:N0}s");
+            await Console.Error.WriteLineAsync($"  ⟳ {label}: {Trunc(ex.Message)} — retry {attempt}/{RetryMaxAttempts - 1} in {delay.TotalSeconds:N0}s");
             await Task.Delay(delay);
         }
     }
-}
-
-// An IChatCompletion (the Tamp.Conformance BYOK seam) over the Anthropic Messages API that
-// accumulates token usage — used by `generate` to report real rule-extraction cost.
-sealed class UsageChat : Tamp.Conformance.IChatCompletion, IDisposable
-{
-    private readonly System.Net.Http.HttpClient _http = new() { Timeout = TimeSpan.FromMinutes(3) };
-    private readonly string _key, _model;
-    private readonly int _maxTokens;
-    public long InputTokens, OutputTokens;
-    public int Calls;
-    public UsageChat(string key, string model, int maxTokens = 8192) { _key = key; _model = model; _maxTokens = maxTokens; }
-    public string ModelId => $"anthropic/{_model}";
-
-    public string Complete(string system, string user)
-    {
-        var body = JsonSerializer.Serialize(new { model = _model, max_tokens = _maxTokens, system, messages = new[] { new { role = "user", content = user } } });
-        using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
-        { Content = new StringContent(body, Encoding.UTF8, "application/json") };
-        req.Headers.TryAddWithoutValidation("x-api-key", _key);
-        req.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
-        req.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
-        using var resp = _http.Send(req);
-        var payload = new StreamReader(resp.Content.ReadAsStream()).ReadToEnd();
-        if (!resp.IsSuccessStatusCode) throw new HttpRequestException($"Anthropic {(int)resp.StatusCode}: {payload}");
-        using var doc = JsonDocument.Parse(payload);
-        var root = doc.RootElement;
-        Calls++;
-        if (root.TryGetProperty("usage", out var u))
-        {
-            if (u.TryGetProperty("input_tokens", out var it)) InputTokens += it.GetInt64();
-            if (u.TryGetProperty("output_tokens", out var ot)) OutputTokens += ot.GetInt64();
-        }
-        var sb = new StringBuilder();
-        if (root.TryGetProperty("content", out var content))
-            foreach (var b in content.EnumerateArray())
-                if (b.TryGetProperty("type", out var t) && t.GetString() == "text" && b.TryGetProperty("text", out var tx))
-                    sb.Append(tx.GetString());
-        return sb.ToString();
-    }
-    public void Dispose() => _http.Dispose();
 }
