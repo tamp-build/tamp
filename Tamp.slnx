@@ -46,5 +46,6 @@
     <Project Path="tests/Tamp.Security.Pipeline.Tests/Tamp.Security.Pipeline.Tests.csproj" />
     <Project Path="tests/Tamp.Components.Tests/Tamp.Components.Tests.csproj" />
     <Project Path="tests/Tamp.Components.NetCli.V10.Tests/Tamp.Components.NetCli.V10.Tests.csproj" />
+    <Project Path="tests/Tamp.Migrate.Tests/Tamp.Migrate.Tests.csproj" />
   </Folder>
 </Solution>

@@ -1,149 +1,632 @@
-# Machine-readable projection of the NUKE -> Tamp mapping reference.
-# Source of truth for prose + context: mapping-reference.md (ADR 0021).
-# Consumed by `tamp migrate nuke` (auto-tier rewrites) and agent-guided migration.
-# tiers: auto = deterministic 1:1 | assisted = light judgment | manual = hand-resolve (flag)
-version: "0.1"
+# Machine-readable projection of the NUKE -> Tamp mapping reference (ADR 0021).
+# Prose + context: mapping-reference.md. Consumed by `tamp migrate nuke` (Tamp.Migrate) and by
+# agent-guided migration. Validated by tests/Tamp.Migrate.Tests/MappingTests.cs: ids, the closed
+# vocabularies below, and every Tamp-side symbol of the in-tree packages (Tamp.Core, Tamp.NetCli,
+# Tamp.Components) are checked against the real API by reflection.
+#
+# Scope: NUKE 8+ (the Serilog era). Validate the NUKE side against the current NUKE release.
+#
+# ---- Schema 0.2 ----
+# rules[]: one per NUKE construct.
+#   id        unique, `<category>.<slug>`; stable (reports and TAMP-MIGRATE markers cite it)
+#   category  boilerplate | injection | paths | target_dsl | logging | components
+#   tier      auto     = applied mechanically, no marker
+#             assisted = rewrite (if any) applied AND a marker left for a person to confirm
+#             manual   = no rewrite; marker only
+#   nuke/tamp display strings (tamp: null = no equivalent)
+#   match     what the syntactic rewriter looks for (kind + fields):
+#               base_type  {names}               a base-list entry, e.g. `: NukeBuild`
+#               attribute  {names}               an attribute on a member or class
+#               invocation {names, receiver?}    a call `X.Name(...)` / `Name(...)`; receiver = simple name of X
+#               identifier {names}               a non-invoked name (property, type)
+#               using      {namespace}           a using directive for this namespace or a child of it
+#               entrypoint {}                    `Main() => Execute<T>(x => x.Target)`
+#               field_invocation {attributes}    a delegate call on a field carrying one of these attributes
+#               file       {globs}               a repository file (relative to the repo root)
+#   rewrite   (omit for none):
+#               keep                             valid Tamp as written
+#               rename   {to}                    swap the matched name
+#               template {to}                    replace the whole match; placeholders {receiver} {args}
+#               remove                           delete the matched node
+#               handler  {name}                  code-defined transform; names are listed in `handlers`
+#   marker    the TAMP-MIGRATE text (required for assisted/manual; never on auto)
+#   note      context for people; not emitted
+#   verify    Tamp-side symbols, `Namespace.Type` or `Namespace.Type.Member`, checked by reflection
+#
+# tools.<family>: NUKE `{Class}.{Verb}(s => s.Setting(...))` -> Tamp `{facade}.{Verb}(s => ...)`.
+#   verbs:    NUKE method -> Tamp verb (string), or {to, tier}; tier defaults to the family tier
+#   settings: NUKE setting -> {to, args?, tier} (rename, optional fixed args) or {template, tier}
+#   in_tree:  true when the wrapper builds in this repo; its verbs and settings are verified
+#
+# gaps: NUKE surface with no Tamp equivalent, surfaced by the inventory before any rewrite.
+
+version: "0.2"
+nuke: ">=8.0"
 source: docs/nuke-migration/mapping-reference.md
 adr: docs/adr/0021-nuke-to-tamp-migration.md
 
-boilerplate:
-  - { nuke: "class Build : NukeBuild", tamp: "class Build : TampBuild", tier: auto }
-  - { nuke: "Execute<Build>(x => x.Default)", tamp: "Execute<Build>(args)", tier: auto, note: "default target designated via .Default() on the target" }
-  - { nuke: "using Nuke.Common.*", tamp: "using Tamp; + per-tool using Tamp.<Family>.V<N>;", tier: assisted }
-  - { nuke: "build.sh / build.cmd / .nuke/", tamp: "tamp.sh / tamp.cmd (dotnet tamp init)", tier: assisted }
+handlers:
+  entrypoint-default: "Rewrite Main to `public static int Main(string[] args) => Execute<T>(args);` and add `.Default()` to the target Execute selected."
+  usings: "Drop `using Nuke.*`; add `using Tamp;` plus one using per tool family / component namespace the build uses. A Nuke namespace with no mapping is left with a marker."
+  scaffold-bootstrap: "Generate tamp.sh / tamp.cmd and build/Build.csproj (the `tamp init` scaffold); NUKE's scripts and .nuke/ are left for the user to delete."
+  secret-field: "`[Secret] [Parameter] readonly string X;` -> `[Secret] readonly Secret X;`; uses that need the value become `X.Reveal()` (marked)."
+  from-path: "`[PathExecutable] readonly Tool X;` -> `[FromPath(\"<name>\")] readonly Tool X;`; name = the attribute's argument, else the field name lower-cased."
+  components-namespace: "Map `Nuke.Components.<I>` to `Tamp.Components.<I>` for the interfaces Tamp.Components ships; others are marked."
 
-injection:
-  - { nuke: "[Parameter] string", tamp: "[Parameter] string", tier: auto }
-  - { nuke: "[Solution] Solution", tamp: "[Solution] Solution", tier: auto }
-  - { nuke: "[Secret][Parameter] string", tamp: "[Secret] Secret", tier: assisted, note: "distinct Secret type; use .Reveal()" }
-  - { nuke: "[PathExecutable] Tool", tamp: "[FromPath(\"name\")] Tool", tier: auto }
-  - { nuke: "[GitVersion] GitVersion", tamp: "Tamp.GitVersion.V6 wrapper", tier: assisted }
-  - { nuke: "[GitRepository] GitRepository", tamp: "git via Tamp.GitHubCli.V2 / shell", tier: manual }
-  - { nuke: "IsLocalBuild / IsServerBuild", tamp: "IsLocalBuild / HostProfile / CiHost.Detect", tier: assisted }
+rules:
+  # ---- boilerplate ----
+  - id: boilerplate.base-class
+    category: boilerplate
+    tier: auto
+    nuke: "class Build : NukeBuild"
+    tamp: "class Build : TampBuild"
+    match: { kind: base_type, names: [NukeBuild] }
+    rewrite: { kind: rename, to: TampBuild }
+    verify: [Tamp.TampBuild]
+  - id: boilerplate.entrypoint-default
+    category: boilerplate
+    tier: auto
+    nuke: "public static int Main() => Execute<Build>(x => x.Default);"
+    tamp: "public static int Main(string[] args) => Execute<Build>(args); + .Default() on the target"
+    match: { kind: entrypoint }
+    rewrite: { kind: handler, name: entrypoint-default }
+    verify: [Tamp.ITargetDefinition.Default]
+  - id: boilerplate.usings
+    category: boilerplate
+    tier: assisted
+    nuke: "using Nuke.Common.*"
+    tamp: "using Tamp; + per-tool using Tamp.<Family>.V<N>;"
+    match: { kind: using, namespace: Nuke }
+    rewrite: { kind: handler, name: usings }
+    marker: "Check the generated usings; a Nuke namespace with no Tamp mapping was left in place."
+  - id: boilerplate.bootstrap-scripts
+    category: boilerplate
+    tier: assisted
+    nuke: "build.sh / build.cmd / build.ps1 / .nuke/"
+    tamp: "tamp.sh / tamp.cmd (the `tamp init` scaffold)"
+    match: { kind: file, globs: [build.sh, build.cmd, build.ps1, ".nuke/**"] }
+    rewrite: { kind: handler, name: scaffold-bootstrap }
+    marker: "Port any custom steps from NUKE's bootstrap scripts, then delete them and .nuke/."
+  - id: boilerplate.ci-generation
+    category: boilerplate
+    tier: manual
+    nuke: "[GitHubActions(...)] / [AzurePipelines(...)] / [AppVeyor(...)] / [TeamCity(...)] / [GitLab(...)]"
+    tamp: null
+    match: { kind: attribute, names: [GitHubActions, AzurePipelines, AppVeyor, TeamCity, GitLab, SpaceAutomation] }
+    marker: "Tamp doesn't generate CI configuration. Keep the existing pipeline file, point it at ./tamp.sh, then delete this attribute."
+  - id: boilerplate.build-attributes
+    category: boilerplate
+    tier: manual
+    nuke: "[UnsetVisualStudioEnvironmentVariables] and similar build attributes"
+    tamp: null
+    match: { kind: attribute, names: [UnsetVisualStudioEnvironmentVariables, ShutdownDotNetAfterServerBuild, DotNetVerbosityMapping] }
+    marker: "No Tamp equivalent; usually unnecessary. Delete it, or port what it did into a target."
 
-paths:
-  - { nuke: "RootDirectory", tamp: "RootDirectory", tier: auto }
-  - { nuke: "AbsolutePath", tamp: "AbsolutePath", tier: auto }
-  - { nuke: "dir / \"x\" / \"y\"", tamp: "dir / \"x\" / \"y\"", tier: auto }
-  - { nuke: "TemporaryDirectory", tamp: "TemporaryDirectory", tier: auto }
-  - { nuke: "GlobFiles / GlobDirectories", tamp: "GlobFiles / GlobDirectories", tier: auto }
-  - { nuke: "EnsureExistingDirectory / EnsureCleanDirectory", tamp: "CreateDirectory() / CreateOrCleanDirectory()", tier: auto }
-  - { nuke: "CopyFile / MoveFile / DeleteDirectory", tamp: "CopyFile / MoveFile / DeleteDirectory", tier: assisted }
+  # ---- injection ----
+  - id: injection.parameter
+    category: injection
+    tier: auto
+    nuke: "[Parameter] readonly string Foo;"
+    tamp: "[Parameter] readonly string Foo;"
+    match: { kind: attribute, names: [Parameter] }
+    rewrite: { kind: keep }
+    verify: [Tamp.ParameterAttribute]
+  - id: injection.solution
+    category: injection
+    tier: auto
+    nuke: "[Solution] readonly Solution Solution;"
+    tamp: "[Solution] readonly Solution Solution;"
+    match: { kind: attribute, names: [Solution] }
+    rewrite: { kind: keep }
+    verify: [Tamp.SolutionAttribute]
+  - id: injection.secret
+    category: injection
+    tier: assisted
+    nuke: "[Secret] [Parameter] readonly string Token;"
+    tamp: "[Secret] readonly Secret Token;"
+    match: { kind: attribute, names: [Secret] }
+    rewrite: { kind: handler, name: secret-field }
+    marker: "The field is now a Secret: pass it where a Secret is accepted, or call .Reveal() where the plain value is needed (TAMP004)."
+    verify: [Tamp.SecretAttribute, Tamp.Secret.Reveal]
+  - id: injection.path-executable
+    category: injection
+    tier: auto
+    nuke: "[PathExecutable] / [PathVariable] readonly Tool Git;"
+    tamp: "[FromPath(\"git\")] readonly Tool Git;"
+    match: { kind: attribute, names: [PathExecutable, PathVariable] }
+    rewrite: { kind: handler, name: from-path }
+    verify: [Tamp.FromPathAttribute, Tamp.Tool]
+  - id: injection.tool-invocation
+    category: injection
+    tier: assisted
+    nuke: "Git(\"status --short\")"
+    tamp: "Git.Plan(\"status\", \"--short\") (a CommandPlan the target runs)"
+    match: { kind: field_invocation, attributes: [PathExecutable, PathVariable] }
+    rewrite: { kind: template, to: "{receiver}.Plan({args})" }
+    marker: "NUKE parsed one argument string; Plan takes one argument per element. Split it, and return or run the CommandPlan (TAMP001)."
+    verify: [Tamp.Tool.Plan]
+  - id: injection.gitversion
+    category: injection
+    tier: assisted
+    nuke: "[GitVersion] readonly GitVersion GitVersion;"
+    tamp: "GitVersion.Run(s => ...) from Tamp.GitVersion.V6"
+    match: { kind: attribute, names: [GitVersion] }
+    marker: "Add Tamp.GitVersion.V6 and call GitVersion.Run in the target that needs the version, instead of an injected field."
+  - id: injection.git-repository
+    category: injection
+    tier: manual
+    nuke: "[GitRepository] readonly GitRepository Repository;"
+    tamp: null
+    match: { kind: attribute, names: [GitRepository] }
+    marker: "No injected GitRepository. Read repo facts with git ([FromPath(\"git\")] Tool) or Tamp.GitHubCli.V2."
+  - id: injection.is-local-build
+    category: injection
+    tier: auto
+    nuke: "IsLocalBuild / IsServerBuild"
+    tamp: "IsLocalBuild / IsServerBuild"
+    match: { kind: identifier, names: [IsLocalBuild, IsServerBuild] }
+    rewrite: { kind: keep }
+    verify: [Tamp.TampBuild.IsLocalBuild, Tamp.TampBuild.IsServerBuild]
+  - id: injection.host
+    category: injection
+    tier: assisted
+    nuke: "Host is GitHubActions / GitHubActions.Instance"
+    tamp: "CiHost.Detect()"
+    match: { kind: identifier, names: [Host] }
+    marker: "Detect the CI host with CiHost.Detect() (null when local) instead of NUKE's Host."
+    verify: [Tamp.CiHost.Detect]
 
-target_dsl:
-  - { nuke: ".DependsOn(X)", tamp: ".DependsOn(X)", tier: auto }
-  - { nuke: ".Before(X) / .After(X)", tamp: ".Before(X) / .After(X)", tier: auto }
-  - { nuke: ".Triggers(X) / .TriggeredBy(X)", tamp: ".Triggers(X) / .TriggeredBy(X)", tier: auto }
-  - { nuke: ".Executes(() => {})", tamp: ".Executes(() => {})", tier: auto }
-  - { nuke: ".Produces(glob)", tamp: ".Produces(glob)", tier: auto }
-  - { nuke: ".Consumes(X)", tamp: ".DependsOn(X) + .Produces on X", tier: assisted }
-  - { nuke: ".OnlyWhenStatic(f) / .OnlyWhenDynamic(f)", tamp: ".OnlyWhen(f)", tier: assisted }
-  - { nuke: ".Requires(f)", tamp: ".Requires(f)", tier: assisted }
-  - { nuke: ".AssuredAfterFailure()", tamp: ".AssuredAfterFailure()", tier: auto }
-  - { nuke: ".ProceedAfterFailure()", tamp: ".FailureMode(FailureMode.Continue)", tier: assisted, note: "Continue still FAILS the build (#4)" }
-  - { nuke: "[Partition]", tamp: null, tier: manual, note: "no Tamp equivalent" }
+  # ---- paths & filesystem ----
+  - id: paths.root-directory
+    category: paths
+    tier: auto
+    nuke: "RootDirectory"
+    tamp: "RootDirectory"
+    match: { kind: identifier, names: [RootDirectory] }
+    rewrite: { kind: keep }
+    verify: [Tamp.TampBuild.RootDirectory]
+  - id: paths.temporary-directory
+    category: paths
+    tier: auto
+    nuke: "TemporaryDirectory"
+    tamp: "TemporaryDirectory"
+    match: { kind: identifier, names: [TemporaryDirectory] }
+    rewrite: { kind: keep }
+    verify: [Tamp.TampBuild.TemporaryDirectory]
+  - id: paths.absolute-path
+    category: paths
+    tier: auto
+    nuke: "AbsolutePath, dir / \"sub\" / \"file.txt\""
+    tamp: "AbsolutePath, dir / \"sub\" / \"file.txt\""
+    match: { kind: identifier, names: [AbsolutePath] }
+    rewrite: { kind: keep }
+    verify: [Tamp.AbsolutePath]
+  - id: paths.glob
+    category: paths
+    tier: auto
+    nuke: "path.GlobFiles(...) / path.GlobDirectories(...)"
+    tamp: "path.GlobFiles(...) / path.GlobDirectories(...)"
+    match: { kind: invocation, names: [GlobFiles, GlobDirectories] }
+    rewrite: { kind: keep }
+    verify: [Tamp.AbsolutePath.GlobFiles, Tamp.AbsolutePath.GlobDirectories]
+  - id: paths.create-directory
+    category: paths
+    tier: auto
+    nuke: "path.CreateDirectory()"
+    tamp: "path.CreateDirectory()"
+    match: { kind: invocation, names: [CreateDirectory] }
+    rewrite: { kind: keep }
+    verify: [Tamp.AbsolutePath.CreateDirectory]
+  - id: paths.create-or-clean-directory
+    category: paths
+    tier: auto
+    nuke: "path.CreateOrCleanDirectory()"
+    tamp: "path.DeleteDirectory().CreateDirectory()"
+    match: { kind: invocation, names: [CreateOrCleanDirectory] }
+    rewrite: { kind: template, to: "{receiver}.DeleteDirectory().CreateDirectory()" }
+    verify: [Tamp.AbsolutePath.DeleteDirectory, Tamp.AbsolutePath.CreateDirectory]
+  - id: paths.delete
+    category: paths
+    tier: auto
+    nuke: "path.DeleteDirectory() / path.DeleteFile()"
+    tamp: "path.DeleteDirectory() / path.DeleteFile()"
+    match: { kind: invocation, names: [DeleteDirectory, DeleteFile] }
+    rewrite: { kind: keep }
+    verify: [Tamp.AbsolutePath.DeleteDirectory, Tamp.AbsolutePath.DeleteFile]
+  - id: paths.touch
+    category: paths
+    tier: auto
+    nuke: "path.TouchFile()"
+    tamp: "path.Touch()"
+    match: { kind: invocation, names: [TouchFile] }
+    rewrite: { kind: rename, to: Touch }
+    verify: [Tamp.AbsolutePath.Touch]
+  - id: paths.read-write
+    category: paths
+    tier: auto
+    nuke: "path.ReadAllText() / WriteAllText(...) / ReadAllLines() / WriteAllLines(...) / ReadAllBytes() / WriteAllBytes(...)"
+    tamp: "the same methods on AbsolutePath"
+    match: { kind: invocation, names: [ReadAllText, WriteAllText, ReadAllLines, WriteAllLines, ReadAllBytes, WriteAllBytes] }
+    rewrite: { kind: keep }
+    verify: [Tamp.AbsolutePath.ReadAllText, Tamp.AbsolutePath.WriteAllText, Tamp.AbsolutePath.ReadAllLines, Tamp.AbsolutePath.WriteAllLines, Tamp.AbsolutePath.ReadAllBytes, Tamp.AbsolutePath.WriteAllBytes]
+  - id: paths.copy
+    category: paths
+    tier: assisted
+    nuke: "path.Copy(target, policy)"
+    tamp: "path.CopyTo(target, overwrite)"
+    match: { kind: invocation, names: [Copy] }
+    rewrite: { kind: rename, to: CopyTo }
+    marker: "NUKE's ExistsPolicy becomes a bool overwrite (default false)."
+    verify: [Tamp.AbsolutePath.CopyTo]
+  - id: paths.move
+    category: paths
+    tier: assisted
+    nuke: "path.Move(target, policy)"
+    tamp: "path.MoveTo(target, overwrite)"
+    match: { kind: invocation, names: [Move] }
+    rewrite: { kind: rename, to: MoveTo }
+    marker: "NUKE's ExistsPolicy becomes a bool overwrite (default false)."
+    verify: [Tamp.AbsolutePath.MoveTo]
+  - id: paths.copy-to-directory
+    category: paths
+    tier: assisted
+    nuke: "file.CopyToDirectory(dir, policy)"
+    tamp: "file.CopyToDirectory(dir, overwrite)"
+    match: { kind: invocation, names: [CopyToDirectory] }
+    rewrite: { kind: keep }
+    marker: "Tamp's CopyToDirectory copies files only, and overwrite defaults to true."
+    verify: [Tamp.AbsolutePath.CopyToDirectory]
 
-logging:
-  - { nuke: "Serilog.Log.Information", tamp: "Log.Info", tier: assisted }
-  - { nuke: "Log.Warning / Error / Debug", tamp: "Log.Warn / Error / Debug", tier: assisted }
+  # ---- target DSL ----
+  - id: target_dsl.target
+    category: target_dsl
+    tier: auto
+    nuke: "Target Foo => _ => _ ..."
+    tamp: "Target Foo => _ => _ ..."
+    match: { kind: identifier, names: [Target] }
+    rewrite: { kind: keep }
+    verify: [Tamp.Target]
+  - id: target_dsl.depends-on
+    category: target_dsl
+    tier: auto
+    nuke: ".DependsOn(X, Y)"
+    tamp: ".DependsOn(X, Y)"
+    match: { kind: invocation, names: [DependsOn] }
+    rewrite: { kind: keep }
+    verify: [Tamp.ITargetDefinition.DependsOn]
+  - id: target_dsl.ordering
+    category: target_dsl
+    tier: auto
+    nuke: ".Before(X) / .After(X)"
+    tamp: ".Before(X) / .After(X)"
+    match: { kind: invocation, names: [Before, After] }
+    rewrite: { kind: keep }
+    verify: [Tamp.ITargetDefinition.Before, Tamp.ITargetDefinition.After]
+  - id: target_dsl.triggers
+    category: target_dsl
+    tier: auto
+    nuke: ".Triggers(X) / .TriggeredBy(X)"
+    tamp: ".Triggers(X) / .TriggeredBy(X)"
+    match: { kind: invocation, names: [Triggers, TriggeredBy] }
+    rewrite: { kind: keep }
+    verify: [Tamp.ITargetDefinition.Triggers, Tamp.ITargetDefinition.TriggeredBy]
+  - id: target_dsl.executes
+    category: target_dsl
+    tier: auto
+    nuke: ".Executes(() => { ... })"
+    tamp: ".Executes(() => { ... })"
+    match: { kind: invocation, names: [Executes] }
+    rewrite: { kind: keep }
+    verify: [Tamp.ITargetDefinition.Executes]
+  - id: target_dsl.description
+    category: target_dsl
+    tier: auto
+    nuke: ".Description(\"...\")"
+    tamp: ".Description(\"...\")"
+    match: { kind: invocation, names: [Description] }
+    rewrite: { kind: keep }
+    verify: [Tamp.ITargetDefinition.Description]
+  - id: target_dsl.produces
+    category: target_dsl
+    tier: auto
+    nuke: ".Produces(ArtifactsDirectory / \"*.nupkg\")"
+    tamp: ".Produces(ArtifactsDirectory / \"*.nupkg\")"
+    match: { kind: invocation, names: [Produces] }
+    rewrite: { kind: keep }
+    note: "Tamp's Produces takes one glob; chain a call per pattern."
+    verify: [Tamp.ITargetDefinition.Produces]
+  - id: target_dsl.assured-after-failure
+    category: target_dsl
+    tier: auto
+    nuke: ".AssuredAfterFailure()"
+    tamp: ".AssuredAfterFailure()"
+    match: { kind: invocation, names: [AssuredAfterFailure] }
+    rewrite: { kind: keep }
+    verify: [Tamp.ITargetDefinition.AssuredAfterFailure]
+  - id: target_dsl.only-when
+    category: target_dsl
+    tier: assisted
+    nuke: ".OnlyWhenStatic(() => c) / .OnlyWhenDynamic(() => c)"
+    tamp: ".OnlyWhen(() => c)"
+    match: { kind: invocation, names: [OnlyWhenStatic, OnlyWhenDynamic] }
+    rewrite: { kind: rename, to: OnlyWhen }
+    marker: "Tamp evaluates OnlyWhen once, when the target is reached; NUKE's static/dynamic distinction is gone. Several conditions: one OnlyWhen per condition."
+    verify: [Tamp.ITargetDefinition.OnlyWhen]
+  - id: target_dsl.requires
+    category: target_dsl
+    tier: assisted
+    nuke: ".Requires(() => Field)"
+    tamp: ".Requires(() => Field != null)"
+    match: { kind: invocation, names: [Requires] }
+    rewrite: { kind: keep }
+    marker: "NUKE's Requires(() => Field) means 'Field is set'; Tamp's takes a bool. Write the condition."
+    verify: [Tamp.ITargetDefinition.Requires]
+  - id: target_dsl.consumes
+    category: target_dsl
+    tier: assisted
+    nuke: ".Consumes(X)"
+    tamp: ".DependsOn(X) (+ .Produces on X)"
+    match: { kind: invocation, names: [Consumes] }
+    marker: "Tamp's Consumes(Resource, ConsumeMode) is a concurrency resource, not an artifact dependency. Use DependsOn(X) and declare the files with Produces on X."
+    verify: [Tamp.ITargetDefinition.DependsOn, Tamp.ITargetDefinition.Produces]
+  - id: target_dsl.proceed-after-failure
+    category: target_dsl
+    tier: assisted
+    nuke: ".ProceedAfterFailure()"
+    tamp: ".FailureMode(FailureMode.Continue)"
+    match: { kind: invocation, names: [ProceedAfterFailure] }
+    rewrite: { kind: template, to: "{receiver}.FailureMode(FailureMode.Continue)" }
+    marker: "Continue runs the remaining work but the build still fails (#4); NUKE's ProceedAfterFailure did not fail it."
+    verify: [Tamp.ITargetDefinition.FailureMode, Tamp.FailureMode.Continue]
+  - id: target_dsl.unlisted
+    category: target_dsl
+    tier: assisted
+    nuke: ".Unlisted()"
+    tamp: ".Internal()"
+    match: { kind: invocation, names: [Unlisted] }
+    rewrite: { kind: rename, to: Internal }
+    marker: "Internal also blocks invoking the target directly from the CLI; NUKE's Unlisted only hid it."
+    verify: [Tamp.ITargetDefinition.Internal]
+  - id: target_dsl.partition
+    category: target_dsl
+    tier: manual
+    nuke: "[Partition(n)] / .Partition(...)"
+    tamp: null
+    match: { kind: attribute, names: [Partition] }
+    marker: "No Tamp equivalent for partitioned parallelism. Run serially, or shard outside Tamp."
+  - id: target_dsl.partition-call
+    category: target_dsl
+    tier: manual
+    nuke: ".Partition(...)"
+    tamp: null
+    match: { kind: invocation, names: [Partition] }
+    marker: "No Tamp equivalent for partitioned parallelism. Run serially, or shard outside Tamp."
+  - id: target_dsl.unmapped
+    category: target_dsl
+    tier: manual
+    nuke: ".WhenSkipped(...) / .DependentFor(...) / .TryDependsOn(...) / .TryBefore(...) / .TryAfter(...) / .TryTriggers(...)"
+    tamp: null
+    match: { kind: invocation, names: [WhenSkipped, DependentFor, TryDependsOn, TryBefore, TryAfter, TryTriggers, TryTriggeredBy] }
+    marker: "No direct Tamp equivalent. Restate it with DependsOn / Before / After / TriggeredBy."
 
-components:            # per ADR 0020 (Tamp.Components) — near-1:1 once shipped
-  - { nuke: "NukeBuild, ICompile, ITest, IPack", tamp: "TampBuild, ICompile, ITest, IPack", tier: assisted }
-  - { nuke: "Nuke.Components.IHazSolution", tamp: "Tamp.Components.IHazSolution", tier: assisted }
-  - { nuke: "component target override (reimplement)", tamp: "declare same-named Target on class", tier: assisted }
+  # ---- logging ----
+  - id: logging.serilog
+    category: logging
+    tier: assisted
+    nuke: "Log.Information(\"Built {Project}\", p) / Log.Warning / Log.Error / Log.Debug / Log.Verbose"
+    tamp: "Console.WriteLine($\"Built {p}\") / Console.Error.WriteLine(...)"
+    match: { kind: invocation, receiver: Log, names: [Verbose, Debug, Information, Warning, Error, Fatal] }
+    marker: "Tamp captures each target's console output; there is no build Logger. Rewrite the Serilog template as an interpolated string; warnings and errors to Console.Error."
 
-# Tool families: NUKE {Tool}Tasks.{Tool}{Verb} -> Tamp {Tool}.{Verb} from Tamp.<package>.
-# `verbs` maps NUKE verb suffix -> Tamp verb (Tamp side verified against wrapper source).
-# Settings follow the Set*/Enable* convention; default tier for verb calls is `assisted`.
+  # ---- components (ADR 0020) ----
+  - id: components.interfaces
+    category: components
+    tier: assisted
+    nuke: "class Build : NukeBuild, ICompile, ITest, IPack (Nuke.Components)"
+    tamp: "class Build : TampBuild, ICompile, ITest, IPack (Tamp.Components)"
+    match: { kind: using, namespace: Nuke.Components }
+    rewrite: { kind: handler, name: components-namespace }
+    marker: "Tamp.Components' interfaces mirror NUKE's but their members differ; check each overridden or configured member."
+    verify: [Tamp.Components.IHazSolution, Tamp.Components.IHazConfiguration, Tamp.Components.IHazArtifacts, Tamp.Components.IRestore, Tamp.Components.ICompile, Tamp.Components.ITest, Tamp.Components.IPack]
+  - id: components.unshipped
+    category: components
+    tier: manual
+    nuke: "IPublish, IReportCoverage, IReportTestCount, ISignPackages, IHazGitVersion, IHazGitRepository, IHazChangelog, IHazNerdbankGitVersioning"
+    tamp: null
+    match: { kind: identifier, names: [IPublish, IReportCoverage, IReportTestCount, IReportIssues, ISignPackages, IHazGitVersion, IHazGitRepository, IHazChangelog, IHazNerdbankGitVersioning, IHazTwitterCredentials, IReportDuplicates] }
+    marker: "Tamp.Components doesn't ship this component. Write its targets out on the build class."
+
 tools:
   dotnet:
+    id: tool.dotnet
+    nuke_class: DotNetTasks
+    nuke_namespace: Nuke.Common.Tools.DotNet
     package: Tamp.NetCli.V{N}
+    package_majors: [8, 9, 10]
+    namespace: Tamp.NetCli.V{N}
     facade: DotNet
-    verbs: { DotNetRestore: Restore, DotNetBuild: Build, DotNetTest: Test, DotNetPack: Pack, DotNetPublish: Publish, DotNetNuGetPush: NuGetPush }
-    settings: { SetProjectFile: SetProject, SetConfiguration: SetConfiguration, EnableNoRestore: "SetNoRestore(true)", EnableNoBuild: "SetNoBuild(true)", SetOutputDirectory: SetOutput, SetFramework: SetFramework, SetVerbosity: SetVerbosity, AddLoggers: AddLogger, SetProperty: SetProperty }
+    in_tree: true
+    tier: auto
+    verbs: { DotNetRestore: Restore, DotNetBuild: Build, DotNetTest: Test, DotNetPack: Pack, DotNetPublish: Publish, DotNetNuGetPush: NuGetPush, DotNetClean: Clean, DotNetFormat: Format }
+    settings:
+      SetProjectFile: { to: SetProject, tier: auto }
+      SetConfiguration: { to: SetConfiguration, tier: auto }
+      SetFramework: { to: SetFramework, tier: auto }
+      SetRuntime: { to: SetRuntime, tier: auto }
+      SetOutputDirectory: { to: SetOutput, tier: auto }
+      SetOutput: { to: SetOutput, tier: auto }
+      SetNoRestore: { to: SetNoRestore, tier: auto }
+      EnableNoRestore: { to: SetNoRestore, args: "true", tier: auto }
+      DisableNoRestore: { to: SetNoRestore, args: "false", tier: auto }
+      SetNoBuild: { to: SetNoBuild, tier: auto }
+      EnableNoBuild: { to: SetNoBuild, args: "true", tier: auto }
+      DisableNoBuild: { to: SetNoBuild, args: "false", tier: auto }
+      EnableNoLogo: { to: SetNoLogo, args: "true", tier: auto }
+      SetFilter: { to: SetFilter, tier: auto }
+      SetResultsDirectory: { to: SetResultsDirectory, tier: auto }
+      SetSelfContained: { to: SetSelfContained, tier: auto }
+      EnableSelfContained: { to: SetSelfContained, args: "true", tier: auto }
+      EnablePublishSingleFile: { to: SetPublishSingleFile, args: "true", tier: auto }
+      EnablePublishTrimmed: { to: SetPublishTrimmed, args: "true", tier: auto }
+      EnablePublishReadyToRun: { to: SetPublishReadyToRun, args: "true", tier: auto }
+      EnableIncludeSymbols: { to: SetIncludeSymbols, args: "true", tier: auto }
+      SetVersionSuffix: { to: SetVersionSuffix, tier: auto }
+      SetSource: { to: SetSource, tier: assisted }
+      SetApiKey: { to: SetApiKey, tier: assisted }
+      EnableSkipDuplicate: { to: SetSkipDuplicate, args: "true", tier: auto }
+      SetTargetPath: { to: SetPackagePath, tier: auto }
+      SetVerbosity: { to: SetVerbosity, tier: assisted }
+      AddLoggers: { to: AddLogger, tier: assisted }
+      SetLoggers: { to: AddLogger, tier: assisted }
+      SetDataCollector: { to: AddDataCollector, tier: auto }
+      SetProperty: { to: SetProperty, tier: auto }
+      AddProperty: { to: SetProperty, tier: auto }
+      SetVersion: { template: "SetProperty(\"Version\", {args})", tier: auto }
+      SetAssemblyVersion: { template: "SetProperty(\"AssemblyVersion\", {args})", tier: auto }
+      SetFileVersion: { template: "SetProperty(\"FileVersion\", {args})", tier: auto }
+      SetInformationalVersion: { template: "SetProperty(\"InformationalVersion\", {args})", tier: auto }
+    notes: "SetVerbosity: NUKE's DotNetVerbosity members are lower-case (minimal), Tamp's are Pascal-case (Minimal). SetApiKey: pass a Secret. Loggers: one AddLogger per logger."
   docker:
+    id: tool.docker
+    nuke_class: DockerTasks
+    nuke_namespace: Nuke.Common.Tools.Docker
     package: Tamp.Docker.V27
+    namespace: Tamp.Docker.V27
     facade: Docker
+    tier: assisted
     verbs: { DockerBuild: Build, DockerRun: Run, DockerPush: Push, DockerPull: Pull, DockerTag: Tag, DockerLogin: Login, DockerLogout: Logout, DockerPs: Ps, DockerInspect: Inspect, DockerLogs: Logs, DockerExec: Exec, DockerStart: Start, DockerStop: Stop, DockerRestart: Restart, DockerKill: Kill, DockerRm: Rm, DockerComposeUp: Up, DockerComposeDown: Down }
     notes: "BuildKit = Docker.Buildx.Build; classic = Docker.LegacyBuild"
   efcore:
+    id: tool.efcore
+    nuke_class: EntityFrameworkTasks
+    nuke_namespace: Nuke.Common.Tools.EntityFramework
     package: Tamp.EFCore.V{N}
+    namespace: Tamp.EFCore.V{N}
     facade: EFCore
     async: true
+    tier: assisted
     verbs: { EntityFrameworkMigrationsAdd: MigrationsAdd, EntityFrameworkMigrationsRemove: MigrationsRemove, EntityFrameworkMigrationsList: MigrationsList, EntityFrameworkMigrationsScript: MigrationsScript, EntityFrameworkDatabaseUpdate: DatabaseUpdate, EntityFrameworkDatabaseDrop: DatabaseDrop, EntityFrameworkDbContextScaffold: DbContextScaffold }
   coverlet:
+    id: tool.coverlet
+    nuke_class: CoverletTasks
+    nuke_namespace: Nuke.Common.Tools.Coverlet
     package: Tamp.Coverlet.V6
+    namespace: Tamp.Coverlet.V6
     facade: DotNetTestSettings.WithCoverlet
-    verbs: { "DotNetTest+XPlat Code Coverage": "DotNet.Test(s => s.WithCoverlet(...))" }
     tier: assisted
+    verbs: { Coverlet: "DotNet.Test(s => s.WithCoverlet(...))" }
+    notes: "DotNetTest(s => s.SetDataCollector(\"XPlat Code Coverage\")) also maps here"
   reportgenerator:
+    id: tool.reportgenerator
+    nuke_class: ReportGeneratorTasks
+    nuke_namespace: Nuke.Common.Tools.ReportGenerator
     package: Tamp.ReportGenerator.V5
+    namespace: Tamp.ReportGenerator.V5
     facade: ReportGenerator
+    tier: assisted
     verbs: { ReportGenerator: Run }
   sonarscanner:
+    id: tool.sonarscanner
+    nuke_class: SonarScannerTasks
+    nuke_namespace: Nuke.Common.Tools.SonarScanner
     package: Tamp.SonarScanner.V10
+    namespace: Tamp.SonarScanner.V10
     facade: Sonar
+    tier: assisted
     verbs: { SonarScannerBegin: Begin, SonarScannerEnd: End }
   gitversion:
+    id: tool.gitversion
+    nuke_class: GitVersionTasks
+    nuke_namespace: Nuke.Common.Tools.GitVersion
     package: Tamp.GitVersion.V6
+    namespace: Tamp.GitVersion.V6
     facade: GitVersion
+    tier: assisted
     verbs: { GitVersion: Run }
-    notes: "NUKE prefers the [GitVersion] attribute; Tamp calls the wrapper"
+    notes: "NUKE prefers the [GitVersion] attribute (injection.gitversion); Tamp calls the wrapper"
   npm:
+    id: tool.npm
+    nuke_class: NpmTasks
+    nuke_namespace: Nuke.Common.Tools.Npm
     package: Tamp.Npm.V10
+    namespace: Tamp.Npm.V10
     facade: Npm
+    tier: assisted
     verbs: { NpmInstall: Install, NpmCi: Ci, NpmRun: Run, NpmPublish: Publish }
   yarn:
+    id: tool.yarn
+    nuke_class: YarnTasks
+    nuke_namespace: Nuke.Common.Tools.Yarn
     package: Tamp.Yarn.V4
+    namespace: Tamp.Yarn.V4
     facade: Yarn
+    tier: assisted
     verbs: { YarnInstall: Install, YarnRun: Run, YarnPack: Pack, YarnPublish: Publish }
   helm:
+    id: tool.helm
+    nuke_class: HelmTasks
+    nuke_namespace: Nuke.Common.Tools.Helm
     package: Tamp.Helm.V3
+    namespace: Tamp.Helm.V3
     facade: Helm
-    verbs: { HelmLint: Lint, HelmPackage: Package, HelmUpgrade: Upgrade }
+    tier: assisted
+    verbs: { HelmLint: Lint, HelmPackage: Package, HelmPush: Push, HelmTemplate: Template, HelmUpgrade: Upgrade }
     notes: "verbs beyond Lint/Package/Push/Template/Upgrade -> manual"
   kubectl:
+    id: tool.kubectl
+    nuke_class: KubernetesTasks
+    nuke_namespace: Nuke.Common.Tools.Kubernetes
     package: Tamp.Kubectl
+    namespace: Tamp.Kubectl
     facade: Kubectl
+    tier: assisted
     verbs: { KubernetesApply: Apply, KubernetesDelete: Delete, KubernetesGet: Get, KubernetesDescribe: Describe, KubernetesLogs: Logs }
   msbuild_classic:
+    id: tool.msbuild-classic
+    nuke_class: MSBuildTasks
+    nuke_namespace: Nuke.Common.Tools.MSBuild
     package: Tamp.MSBuildClassic
+    namespace: Tamp.MSBuildClassic
     facade: MSBuildClassic
-    verbs: { "MSBuild(SetTargets Build)": Build, "MSBuild(SetTargets Clean)": Clean, "MSBuild(SetTargets Restore)": Restore }
-    notes: "SDK-style -> prefer DotNet.Build"
+    tier: assisted
+    verbs: { MSBuild: Build }
+    notes: "MSBuild(s => s.SetTargets(\"Clean\"/\"Restore\")) -> MSBuildClassic.Clean/Restore; SDK-style projects -> prefer DotNet.Build"
   azurecli:
+    id: tool.azurecli
+    nuke_class: AzureTasks
+    nuke_namespace: Nuke.Common.Tools.Azure
     package: Tamp.AzureCli.V2
+    namespace: Tamp.AzureCli.V2
     facade: AzureCli
+    tier: assisted
     verbs: { AzureCli: Raw }
     notes: "typed verbs: Login/Logout/Show/List/Create/Delete/Set/Rest/GetAccessToken/Version"
 
-# Coverage gaps: NUKE surface with no Tamp equivalent. Surfaced up front by the tooling;
-# these are what cannot auto-convert. Validate against the current NUKE release when building.
 gaps:
   no_wrapper:            # no Tamp.<Family> package -> manual (raw ProcessRunner / [FromPath] Tool)
-    - { nuke: PowerShellTasks, workaround: "[FromPath(pwsh)] Tool / ProcessRunner", priority: high }
-    - { nuke: GitTasks, workaround: "[FromPath(git)] Tool; some facts via Tamp.GitHubCli.V2", priority: high }
-    - { nuke: PaketTasks, workaround: "raw Tool", priority: med }
-    - { nuke: GitReleaseManagerTasks, workaround: "raw Tool / gh release", priority: med }
-    - { nuke: "InspectCodeTasks/CleanupCodeTasks/dupFinder (ReSharper CLT)", workaround: "raw Tool / Tamp.SonarScanner", priority: med }
-    - { nuke: SlackTasks, workaround: "custom IBuildReporter / webhook (Tamp ships Telegram)", priority: med }
-    - { nuke: AzureKeyVaultTasks, workaround: "Secret injection / Tamp.AzureCli.V2", priority: med }
-    - { nuke: DotCoverTasks, workaround: "reshape to Tamp.Coverlet.V6", priority: low }
-    - { nuke: ChocolateyTasks, workaround: "raw Tool", priority: low }
-    - { nuke: InnoSetupTasks, workaround: "raw Tool", priority: low }
-    - { nuke: "ILRepackTasks/ILMergeTasks", workaround: "raw Tool", priority: low }
-    - { nuke: OctopusDeployTasks, workaround: "raw Tool", priority: low }
-    - { nuke: "CodecovTasks/CoverallsNetTasks", workaround: "Tamp.Ingest.V1 / raw Tool", priority: low }
-  covered_differently:  # convertible, but reshape (not 1:1)
-    - { nuke: "Xunit2Tasks/NUnitTasks/MSTestTasks/VSTestTasks", tamp: "DotNet.Test", note: "runs via dotnet test, not per-framework console runners" }
-    - { nuke: "NuGetTasks (nuget.exe)", tamp: "DotNet.Pack / DotNet.NuGetPush / DotNet.Restore", note: "SDK path unless nuget.exe specifically needed" }
-    - { nuke: "MSBuildTasks (SDK-style)", tamp: "DotNet.Build", note: "MSBuildClassic only for full-framework/msbuild.exe" }
-  framework_features:   # not tools
-    - { feature: "Nuke.Components", status: in-progress, ref: "ADR 0020 / epic #57", note: "near-1:1 once Tamp.Components ships" }
-    - { feature: "[Partition] / partitioned parallelism", status: none, note: "biggest hard gap; run serially or shard outside Tamp" }
-    - { feature: "[GitRepository] injection", status: none, note: "use git / Tamp.GitHubCli.V2" }
-    - { feature: "Serilog Log.*", status: covered, tamp: "Tamp Logger (Log.Info/Warn/Error)" }
-    - { feature: "nuke :setup wizard", status: covered, tamp: "tamp init (non-interactive)" }
+    - { id: gap.powershell, nuke: [PowerShellTasks], workaround: "[FromPath(\"pwsh\")] Tool / ProcessRunner", priority: high }
+    - { id: gap.git, nuke: [GitTasks], workaround: "[FromPath(\"git\")] Tool; some facts via Tamp.GitHubCli.V2", priority: high }
+    - { id: gap.paket, nuke: [PaketTasks], workaround: "raw Tool", priority: med }
+    - { id: gap.gitreleasemanager, nuke: [GitReleaseManagerTasks], workaround: "raw Tool / gh release", priority: med }
+    - { id: gap.resharper-clt, nuke: [InspectCodeTasks, CleanupCodeTasks, DupFinderTasks], workaround: "raw Tool / Tamp.SonarScanner", priority: med }
+    - { id: gap.slack, nuke: [SlackTasks], workaround: "custom IBuildReporter / webhook (Tamp ships Telegram)", priority: med }
+    - { id: gap.azure-keyvault, nuke: [AzureKeyVaultTasks], workaround: "Secret injection / Tamp.AzureCli.V2", priority: med }
+    - { id: gap.dotcover, nuke: [DotCoverTasks], workaround: "reshape to Tamp.Coverlet.V6", priority: low }
+    - { id: gap.chocolatey, nuke: [ChocolateyTasks], workaround: "raw Tool", priority: low }
+    - { id: gap.innosetup, nuke: [InnoSetupTasks], workaround: "raw Tool", priority: low }
+    - { id: gap.ilmerge, nuke: [ILRepackTasks, ILMergeTasks], workaround: "raw Tool", priority: low }
+    - { id: gap.octopus, nuke: [OctopusTasks], workaround: "raw Tool", priority: low }
+    - { id: gap.coverage-upload, nuke: [CodecovTasks, CoverallsNetTasks], workaround: "Tamp.Ingest.V1 / raw Tool", priority: low }
+  covered_differently:   # convertible, but reshape (not 1:1)
+    - { id: gap.test-runners, nuke: [Xunit2Tasks, NUnitTasks, MSTestTasks, VSTestTasks], tamp: "DotNet.Test", note: "runs via dotnet test, not per-framework console runners" }
+    - { id: gap.nuget-exe, nuke: [NuGetTasks], tamp: "DotNet.Pack / DotNet.NuGetPush / DotNet.Restore", note: "SDK path unless nuget.exe specifically needed" }
+  framework_features:    # not tools
+    - { id: gap.partition, feature: "[Partition] / partitioned parallelism", status: none, note: "biggest hard gap; run serially or shard outside Tamp (target_dsl.partition)" }
+    - { id: gap.git-repository, feature: "[GitRepository] injection", status: none, note: "use git / Tamp.GitHubCli.V2 (injection.git-repository)" }
+    - { id: gap.ci-generation, feature: "CI configuration generation ([GitHubActions] etc.)", status: none, note: "keep the existing pipeline file (boilerplate.ci-generation)" }
+    - { id: gap.components, feature: "Nuke.Components", status: covered, tamp: "Tamp.Components (ADR 0020)", note: "IHazSolution/IHazConfiguration/IHazArtifacts/IRestore/ICompile/ITest/IPack ship; the rest are components.unshipped" }
+    - { id: gap.logging, feature: "Serilog Log.*", status: covered, tamp: "per-target captured console output", note: "logging.serilog" }
+    - { id: gap.setup-wizard, feature: "nuke :setup wizard", status: covered, tamp: "tamp init (non-interactive)" }
 
 manual:
   - "NUKE verbs beyond a Tamp wrapper's surface -> raw call or extend the wrapper"

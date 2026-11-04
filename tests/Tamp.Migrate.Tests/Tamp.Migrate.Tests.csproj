@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+    <RootNamespace>Tamp.Migrate.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="YamlDotNet" />
+  </ItemGroup>
+
+  <!-- ADR 0021: the mapping's Tamp side is verified against these in-tree packages by reflection. -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Tamp.Core\Tamp.Core.csproj" />
+    <ProjectReference Include="..\..\src\Tamp.NetCli.V10\Tamp.NetCli.V10.csproj" />
+    <ProjectReference Include="..\..\src\Tamp.Components\Tamp.Components.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\docs\nuke-migration\mapping.yaml" Link="nuke-migration\mapping.yaml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\nuke-migration\mapping-reference.md" Link="nuke-migration\mapping-reference.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

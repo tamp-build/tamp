@@ -8,6 +8,18 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+### Changed
+
+- **NUKE migration mapping, schema 0.2** ([#58](https://github.com/tamp-build/tamp/issues/58), Phase 2 step 1). `docs/nuke-migration/mapping.yaml` is now what `tamp migrate nuke` will apply. Every rule has a stable `id`, a `match` and `rewrite` from a closed vocabulary, a `marker` for anything not `auto`, and `verify`: the Tamp symbols it relies on. The new `tests/Tamp.Migrate.Tests` checks those symbols against Tamp.Core, Tamp.NetCli and Tamp.Components by reflection. That check corrected six rows of the reference:
+  - `CreateOrCleanDirectory` maps to `DeleteDirectory().CreateDirectory()`, and `Copy` / `Move` map to `CopyTo` / `MoveTo`. `CopyFile`, `MoveFile` and `CreateOrCleanDirectory` don't exist in Tamp.
+  - Serilog `Log.*` maps to console output, which Tamp captures per target. Build code has no `Log`.
+  - NUKE's `.Consumes(Target)` can't be kept by name: Tamp's `Consumes` is a concurrency resource.
+  - Calling a `[PathExecutable]` tool becomes `Tool.Plan(...)`.
+  - `IsServerBuild` maps 1:1.
+  - Components are covered (shipped in 1.17).
+  
+  New rows: CI-generation attributes, `.Unlisted()` → `.Internal()`, `.Description`, unmapped DSL calls, unshipped components, and more DotNet settings. Scope is NUKE 8+. ADR 0021 is accepted, with the Phase 2 design. The migration moves to 1.19 on the roadmap.
+
 ## [1.18.0] — 2026-11-04 — Long-running services: build cancellation, ManagedProcess, service.* events
 
 ### Added

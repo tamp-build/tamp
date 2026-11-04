@@ -13,7 +13,7 @@ The single source of truth for converting a NUKE `Build.cs` to Tamp ([ADR 0021](
 - **`assisted`** — mostly mechanical but needs light judgment (a renamed-with-different-semantics method, an optional arg).
 - **`manual`** — no clean mapping; must be hand-resolved. The tool flags these with `// TAMP-MIGRATE:` and the agent/human resolves them.
 
-> Status: **initial cut** — boilerplate, injection, paths, target DSL, logging, components, and the **DotNet** tool family are covered. Remaining tool families (Docker, Sonar, npm/yarn, …) are filled in per-tool under the [migration epic](../adr/0021-nuke-to-tamp-migration.md); each maps `XyzTasks.*` → `Tamp.Xyz` the same way DotNet does.
+> Scope: **NUKE 8+**. Every row here has a rule in [`mapping.yaml`](mapping.yaml) (schema 0.2), with a stable id that `tamp migrate nuke` reports and cites in its `// TAMP-MIGRATE(<id>):` markers. The Tamp side of every row backed by an in-tree package (Tamp.Core, Tamp.NetCli, Tamp.Components) is checked against the real API by `tests/Tamp.Migrate.Tests`; satellite wrappers' verbs are checked against their source by hand.
 
 ---
 
@@ -26,6 +26,7 @@ The single source of truth for converting a NUKE `Build.cs` to Tamp ([ADR 0021](
 | `using Nuke.Common;` / `Nuke.Common.*` | `using Tamp;` (+ per-tool `using Tamp.NetCli.V10;` etc.) | assisted | Drop `Nuke.Common.*`; add the Tamp namespaces for the wrappers actually used. |
 | `build.sh` / `build.cmd` / `.nuke/` | `tamp.sh` / `tamp.cmd` (from `tamp init`) | assisted | Regenerate the bootstrap via `dotnet tamp init`; don't port NUKE's. |
 | `[UnsetVisualStudioEnvironmentVariables]` and other build-attributes | (drop) | manual | No Tamp equivalent; usually unnecessary. |
+| `[GitHubActions(...)]` / `[AzurePipelines(...)]` / other CI-generation attributes | — | manual | Tamp doesn't generate CI configuration. Keep the existing pipeline file, point it at `./tamp.sh`, and delete the attribute. |
 
 ## 2. Injection attributes
 
@@ -35,21 +36,28 @@ The single source of truth for converting a NUKE `Build.cs` to Tamp ([ADR 0021](
 | `[Solution] readonly Solution Solution;` | `[Solution] readonly Solution Solution;` | auto | `Solution.Path` in both. |
 | `[Secret] [Parameter] readonly string Token;` | `[Secret] readonly Secret Token;` | assisted | Tamp models secrets as a distinct `Secret` type (ADR 0005), not a string; call sites use `Token` / `Token.Reveal()`. |
 | `[PathVariable]` / `[PathExecutable] readonly Tool Git;` | `[FromPath("git")] readonly Tool Git;` | auto | Both resolve a tool from PATH into a `Tool`. |
+| `Git("status --short")` (calling that field) | `Git.Plan("status", "--short")` | assisted | A NUKE `Tool` is a delegate that parses one argument string; a Tamp `Tool` builds a `CommandPlan` from one argument per element, which the target must return or run (TAMP001). |
 | `[GitVersion] readonly GitVersion GitVersion;` | `Tamp.GitVersion.V6` wrapper | assisted | Add `Tamp.GitVersion.V6`; call its wrapper rather than an injected field. |
 | `[GitRepository] readonly GitRepository Repo;` | (git via `Tamp.GitHubCli.V2` / shell) | manual | No injected `GitRepository`; obtain repo facts via a git wrapper. |
-| `IsLocalBuild` / `IsServerBuild` | `IsLocalBuild` / host detection (`HostProfile` / `CiHost.Detect`) | assisted | `IsLocalBuild` exists; richer CI facts come from host detection rather than a static flag. |
+| `IsLocalBuild` / `IsServerBuild` | `IsLocalBuild` / `IsServerBuild` | auto | Both exist on `TampBuild`. |
+| `Host is GitHubActions` / `GitHubActions.Instance` | `CiHost.Detect()` | assisted | Returns the detected CI host, or null for a local build. |
 
 ## 3. Paths & filesystem (near 1:1 — mostly `auto`)
 
-| NUKE | Tamp | Tier |
-|------|------|------|
-| `RootDirectory` | `RootDirectory` | auto |
-| `AbsolutePath` | `AbsolutePath` | auto |
-| `dir / "sub" / "file.txt"` | `dir / "sub" / "file.txt"` | auto |
-| `TemporaryDirectory` | `TemporaryDirectory` | auto |
-| `AbsolutePath.GlobFiles(...)` / `GlobDirectories(...)` | `RootDirectory.GlobFiles(...)` / `GlobDirectories(...)` | auto |
-| `EnsureExistingDirectory` / `EnsureCleanDirectory` | `CreateDirectory()` / `CreateOrCleanDirectory()` | auto |
-| `CopyFile` / `MoveFile` / `DeleteDirectory` | `CopyFile` / `MoveFile` / `DeleteDirectory` | assisted | Same intent; verify overload names. |
+NUKE 8 names (`AbsolutePath` extension methods). Tamp's are instance methods on `AbsolutePath`.
+
+| NUKE | Tamp | Tier | Notes |
+|------|------|------|-------|
+| `RootDirectory` / `TemporaryDirectory` | `RootDirectory` / `TemporaryDirectory` | auto | |
+| `AbsolutePath`, `dir / "sub" / "file.txt"` | `AbsolutePath`, `dir / "sub" / "file.txt"` | auto | |
+| `path.GlobFiles(...)` / `GlobDirectories(...)` | `path.GlobFiles(...)` / `GlobDirectories(...)` | auto | |
+| `path.CreateDirectory()` | `path.CreateDirectory()` | auto | |
+| `path.CreateOrCleanDirectory()` | `path.DeleteDirectory().CreateDirectory()` | auto | `DeleteDirectory` is a no-op when the directory doesn't exist. |
+| `path.DeleteDirectory()` / `DeleteFile()` | `path.DeleteDirectory()` / `DeleteFile()` | auto | |
+| `path.TouchFile()` | `path.Touch()` | auto | |
+| `path.ReadAllText()` / `WriteAllText(...)` (and the `Lines` / `Bytes` variants) | the same | auto | |
+| `path.Copy(target, policy)` / `Move(target, policy)` | `path.CopyTo(target, overwrite)` / `MoveTo(target, overwrite)` | assisted | NUKE's `ExistsPolicy` becomes a `bool overwrite` (default false). |
+| `file.CopyToDirectory(dir, policy)` | `file.CopyToDirectory(dir, overwrite)` | assisted | Tamp's copies files only; `overwrite` defaults to true. |
 
 ## 4. Target DSL
 
@@ -61,28 +69,34 @@ The single source of truth for converting a NUKE `Build.cs` to Tamp ([ADR 0021](
 | `.Triggers(X)` / `.TriggeredBy(X)` | `.Triggers(X)` / `.TriggeredBy(X)` | auto | |
 | default target (via `Execute<Build>(x => x.Default)`) | `.Default()` on the target | auto | Move the designation onto the target. |
 | `.Executes(() => { … })` | `.Executes(() => { … })` | auto | Body carries over; NUKE-API calls inside still need mapping. |
-| `.Produces("artifacts/*.nupkg")` | `.Produces("artifacts/*.nupkg")` | auto | Tamp uses this for typed outputs + fail-closed slices. |
-| `.Consumes(X)` | `.DependsOn(X)` (+ `.Produces` on X) | assisted | Tamp models input/output through Produces + deps, not a distinct Consumes. |
+| `.Description("...")` | `.Description("...")` | auto | |
+| `.Produces("artifacts/*.nupkg")` | `.Produces("artifacts/*.nupkg")` | auto | Tamp uses this for typed outputs + fail-closed slices. One glob per call. |
+| `.Consumes(X)` | `.DependsOn(X)` (+ `.Produces` on X) | assisted | ⚠ Tamp's own `Consumes(Resource, ConsumeMode)` is a concurrency resource, not an artifact dependency, so the call can't be kept by name. |
 | `.OnlyWhenStatic(() => cond)` / `.OnlyWhenDynamic(...)` | `.OnlyWhen(() => cond)` | assisted | Tamp has one `OnlyWhen`; static/dynamic distinction collapses. |
-| `.Requires(() => Foo)` | `.Requires(() => cond)` | assisted | Tamp's `Requires` is a boolean precondition. |
+| `.Requires(() => Foo)` | `.Requires(() => Foo != null)` | assisted | NUKE's form means "Foo is set"; Tamp's `Requires` takes a bool. |
+| `.Unlisted()` | `.Internal()` | assisted | `Internal` also blocks invoking the target directly; `Unlisted` only hid it. |
 | `.AssuredAfterFailure()` | `.AssuredAfterFailure()` | auto | |
 | `.ProceedAfterFailure()` | `.FailureMode(FailureMode.Continue)` | assisted | ⚠ Tamp's `Continue` runs remaining work but still **fails the build** (#4) — matches "proceed but report", not "swallow". |
 | `[Partition]` / partitioned parallelism | — | manual | **No Tamp equivalent.** Flag; run serially or redesign. |
+| `.WhenSkipped(...)` / `.DependentFor(...)` / `.TryDependsOn(...)` / `.TryBefore(...)` / `.TryAfter(...)` / `.TryTriggers(...)` | — | manual | Restate with `DependsOn` / `Before` / `After` / `TriggeredBy`. |
 
 ## 5. Logging
 
-| NUKE (Serilog) | Tamp | Tier |
-|------|------|------|
-| `Serilog.Log.Information("...")` | `Log.Info("...")` (build `Logger`) | assisted |
-| `Log.Warning` / `Log.Error` / `Log.Debug` | `Log.Warn` / `Log.Error` / `Log.Debug` | assisted |
+Tamp has no logger for build code: it captures each target's console output (and shows the tail when a target fails).
+
+| NUKE (Serilog) | Tamp | Tier | Notes |
+|------|------|------|-------|
+| `Log.Information("Built {Project}", p)` / `Log.Debug` / `Log.Verbose` | `Console.WriteLine($"Built {p}")` | assisted | Rewrite the message template as an interpolated string. |
+| `Log.Warning(...)` / `Log.Error(...)` / `Log.Fatal(...)` | `Console.Error.WriteLine(...)` | assisted | |
 
 ## 6. Components (per [ADR 0020](../adr/0020-tamp-components.md))
 
 | NUKE | Tamp | Tier | Notes |
 |------|------|------|-------|
-| `class Build : NukeBuild, ICompile, ITest, IPack` | `class Build : TampBuild, ICompile, ITest, IPack` | assisted | Requires `Tamp.Components` (0020). Near-1:1 once shipped. |
+| `class Build : NukeBuild, ICompile, ITest, IPack` | `class Build : TampBuild, ICompile, ITest, IPack` | assisted | `Tamp.Components` (shipped in 1.17) has `IHazSolution`, `IHazConfiguration`, `IHazArtifacts`, `IRestore`, `ICompile`, `ITest`, `IPack`; check each overridden or configured member. |
 | `Nuke.Components.IHazSolution` etc. | `Tamp.Components.IHazSolution` etc. | assisted | Same `IHaz*` mental model; the build satisfies the abstract property. |
 | component target override (reimplement member) | declare the same-named `Target` on the class | assisted | Tamp uses class-precedence override (analyzer-guarded). |
+| `IPublish`, `IReportCoverage`, `ISignPackages`, `IHazGitVersion`, `IHazGitRepository`, `IHazChangelog`, … | — | manual | Not in `Tamp.Components`; write the targets out on the build class. |
 
 ## 7. Tool tasks — DotNet (the template for every tool family)
 
@@ -96,6 +110,7 @@ NUKE `DotNetTasks.DotNetXyz(s => s.…)` → Tamp `DotNet.Xyz(s => s.…)` (from
 | `DotNetTasks.DotNetPack(s => …)` | `DotNet.Pack(s => …)` | auto |
 | `DotNetTasks.DotNetPublish(s => …)` | `DotNet.Publish(s => …)` | auto |
 | `DotNetTasks.DotNetNuGetPush(s => …)` | `DotNet.NuGetPush(s => …)` | auto |
+| `DotNetTasks.DotNetClean(s => …)` / `DotNetFormat(s => …)` | `DotNet.Clean(s => …)` / `DotNet.Format(s => …)` | auto |
 
 Settings method renames (the common ones):
 
@@ -103,13 +118,19 @@ Settings method renames (the common ones):
 |------|------|------|
 | `.SetProjectFile(x)` | `.SetProject(x)` | auto |
 | `.SetConfiguration(x)` | `.SetConfiguration(x)` | auto |
-| `.SetNoRestore(true)` / `.EnableNoRestore()` | `.SetNoRestore(true)` | assisted |
-| `.SetNoBuild(true)` / `.EnableNoBuild()` | `.SetNoBuild(true)` | assisted |
-| `.SetOutputDirectory(x)` / `.SetOutput(x)` | `.SetOutput(x)` | assisted |
+| `.SetNoRestore(true)` / `.EnableNoRestore()` | `.SetNoRestore(true)` | auto |
+| `.SetNoBuild(true)` / `.EnableNoBuild()` | `.SetNoBuild(true)` | auto |
+| `.SetOutputDirectory(x)` / `.SetOutput(x)` | `.SetOutput(x)` | auto |
 | `.SetFramework(x)` | `.SetFramework(x)` | auto |
-| `.SetVerbosity(DotNetVerbosity.X)` | `.SetVerbosity(DotNetVerbosity.X)` | assisted |
+| `.SetVerbosity(DotNetVerbosity.minimal)` | `.SetVerbosity(DotNetVerbosity.Minimal)` | assisted |
 | `.AddLoggers("trx")` | `.AddLogger("trx")` | assisted |
-| `.SetProperty("K","V")` / `.AddProperty(...)` | `.SetProperty("K","V")` | assisted |
+| `.SetProperty("K","V")` / `.AddProperty(...)` | `.SetProperty("K","V")` | auto |
+| `.SetVersion(v)` / `.SetAssemblyVersion(v)` / `.SetFileVersion(v)` / `.SetInformationalVersion(v)` | `.SetProperty("Version", v)` (etc.) | auto |
+| `.SetFilter` / `.SetResultsDirectory` / `.SetRuntime` / `.SetVersionSuffix` | the same | auto |
+| `.EnableSelfContained()` / `.EnablePublishSingleFile()` / `.EnablePublishTrimmed()` / `.EnablePublishReadyToRun()` / `.EnableIncludeSymbols()` / `.EnableSkipDuplicate()` / `.EnableNoLogo()` | `.Set{X}(true)` | auto |
+| `.SetTargetPath(x)` (NuGet push) | `.SetPackagePath(x)` | auto |
+| `.SetDataCollector("XPlat Code Coverage")` | `.AddDataCollector(...)` | auto |
+| `.SetSource(x)` / `.SetApiKey(x)` | `.SetSource(x)` / `.SetApiKey(x)` | assisted |
 
 > NUKE's `Enable{X}()`/`Disable{X}()` boolean pairs generally map to Tamp's `Set{X}(bool)`.
 
@@ -247,10 +268,11 @@ The sections above are what Tamp *has*. This section is the honest inverse: **NU
 
 | NUKE feature | Tamp status | Migration guidance |
 |--------------|-------------|--------------------|
-| `Nuke.Components` (interface-mixin targets) | **in progress** — ADR 0020 / epic #57 | Component builds map near-1:1 *once `Tamp.Components` ships*; until then, write the targets out. |
+| `Nuke.Components` (interface-mixin targets) | **covered** — `Tamp.Components` (ADR 0020, 1.17) | The core components map near-1:1 (§6); the others are written out. |
+| CI-configuration generation (`[GitHubActions]` etc.) | none | Keep the existing pipeline file and point it at `./tamp.sh` (§1). |
 | `[Partition]` / partitioned parallelism | **no equivalent** | `manual` — run serially, or shard outside Tamp. The single biggest hard gap. |
 | `[GitRepository]` injection | none | Obtain repo facts via `git` / `Tamp.GitHubCli.V2`; no injected object. |
-| Serilog-based `Log.*` | Tamp's own `Logger` (`Log.Info/Warn/Error`) | Mechanical rename (§5). |
+| Serilog-based `Log.*` | per-target captured console output | Rewrite as `Console.WriteLine` (§5). |
 | `nuke :setup` interactive wizard | `tamp init` (non-interactive scaffold) | Re-scaffold; don't port the bootstrap. |
 | ReSharper / Rider IDE plugin | VS Code extension (Fleet planned) | Different IDE surface; not a build-file concern. |
 
@@ -261,4 +283,4 @@ The sections above are what Tamp *has*. This section is the honest inverse: **NU
 
 ---
 
-*This reference is the durable asset ([ADR 0021](../adr/0021-nuke-to-tamp-migration.md)); tooling (`tamp migrate nuke` + agent-guided migration) is planned once it is complete. §8 is the honest coverage boundary — a migration reports these gaps up front rather than failing on them mid-convert. A machine-readable (YAML/JSON) projection is derived from these tables for tool consumption.*
+*This reference is the durable asset ([ADR 0021](../adr/0021-nuke-to-tamp-migration.md)); the tooling (`tamp migrate nuke` + agent-guided migration) applies its machine-readable projection, [`mapping.yaml`](mapping.yaml). §8 is the honest coverage boundary — a migration reports these gaps up front rather than failing on them mid-convert. Change a row here and its rule in `mapping.yaml` together.*
