@@ -11,8 +11,11 @@ namespace Tamp.Core.Tests;
 
 /// <summary>
 /// #125 part 2: <see cref="ManagedProcess"/>. The child processes are plain <c>sh</c> / <c>cmd</c> sleepers; HTTP and
-/// TCP readiness are checked against listeners in this process, so nothing here needs Node or a real server.
+/// TCP readiness are checked against listeners in this process, so nothing here needs Node or a real server. They run
+/// on their own (no parallelism with other classes): real processes and listeners load a small CI runner, and
+/// timing-sensitive tests elsewhere (Polling) shouldn't feel it.
 /// </summary>
+[Collection(nameof(ManagedProcessTests))]
 public sealed class ManagedProcessTests
 {
     private static readonly bool Windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
@@ -215,6 +218,27 @@ public sealed class ManagedProcessTests
     }
 
     [Fact]
+    public async Task Async_And_Sync_Stops_Together_Record_One_Stop()
+    {
+        var (_, events) = RunBuild(async ct =>
+        {
+            var p = await ManagedProcess.StartAsync(ReadyThenSleep(), Options(SaysReady()), ct);
+            var stops = new[]
+            {
+                p.DisposeAsync().AsTask(),
+                p.DisposeAsync().AsTask(),
+                Task.Run(() => p.Dispose()),
+            };
+            await Task.WhenAll(stops).WaitAsync(TimeSpan.FromSeconds(30), ct);
+            Assert.True(p.HasExited);
+            Assert.False(IsAlive(p.Pid));
+            await p.WaitForExitAsync(ct).WaitAsync(TimeSpan.FromSeconds(5), ct); // already complete
+        });
+        Assert.Single(OnSpan(events, BuildEventTypes.ServiceStopped));
+        Assert.Single(OnSpan(events, BuildEventTypes.ToolExited));
+    }
+
+    [Fact]
     public async Task The_Whole_Tree_Is_Killed()
     {
         if (Windows) return;
@@ -357,3 +381,7 @@ public sealed class ManagedProcessTests
         catch (IOException) { return false; }
     }
 }
+
+/// <summary>Keeps <see cref="ManagedProcessTests"/> from running in parallel with the rest of the suite.</summary>
+[CollectionDefinition(nameof(ManagedProcessTests), DisableParallelization = true)]
+public sealed class ManagedProcessCollection;

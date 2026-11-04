@@ -214,22 +214,22 @@ public sealed class ManagedProcess : IAsyncDisposable, IDisposable
         }
         catch (OperationCanceledException) when (build.IsCancellationRequested)
         {
-            mp.Stop(ServiceStopReason.Signal);
+            await mp.StopAsync(ServiceStopReason.Signal).ConfigureAwait(false);
             throw;
         }
         catch (OperationCanceledException)
         {
-            mp.Stop(ServiceStopReason.Requested);
+            await mp.StopAsync(ServiceStopReason.Requested).ConfigureAwait(false);
             throw;
         }
         catch (TimeoutException)
         {
-            mp.Stop(ServiceStopReason.Timeout);
+            await mp.StopAsync(ServiceStopReason.Timeout).ConfigureAwait(false);
             throw;
         }
         catch
         {
-            mp.Stop(ServiceStopReason.Exited);
+            await mp.StopAsync(ServiceStopReason.Exited).ConfigureAwait(false);
             throw;
         }
         return mp;
@@ -281,12 +281,11 @@ public sealed class ManagedProcess : IAsyncDisposable, IDisposable
     /// <summary>Stop the process (reason <c>requested</c>): kill its tree, wait for it to exit, record the stop.</summary>
     public void Dispose() => Stop(ServiceStopReason.Requested);
 
-    /// <inheritdoc cref="Dispose" />
-    public ValueTask DisposeAsync()
-    {
-        Stop(ServiceStopReason.Requested);
-        return default;
-    }
+    /// <summary>
+    /// Stop the process (reason <c>requested</c>) without blocking a thread: kill its tree, await its exit, record the
+    /// stop.
+    /// </summary>
+    public ValueTask DisposeAsync() => new(StopAsync(ServiceStopReason.Requested));
 
     /// <summary>Stop with <paramref name="reason"/>. Idempotent; a concurrent caller waits for the first stop to finish.</summary>
     internal void Stop(string reason)
@@ -295,7 +294,7 @@ public sealed class ManagedProcess : IAsyncDisposable, IDisposable
         {
             // Wait for the first stop to finish. Deliberately not cancellable: stops happen exactly when the build is
             // being cancelled, and returning early would let the build exit with the tree still being killed.
-            _finished.Wait(Bound(_options.ShutdownTimeout + (_options.GracefulStopTimeout ?? TimeSpan.Zero) + TimeSpan.FromSeconds(5)), CancellationToken.None);
+            _finished.Wait(Bound(StopWaitBound()), CancellationToken.None);
             return;
         }
 
@@ -319,6 +318,56 @@ public sealed class ManagedProcess : IAsyncDisposable, IDisposable
         }
     }
 
+    /// <summary>
+    /// <see cref="Stop"/> without blocking: the graceful wait, the kill and the exit are awaited. A concurrent caller
+    /// awaits the first stop's completion, as <see cref="Stop"/> does.
+    /// </summary>
+    internal async Task StopAsync(string reason)
+    {
+        if (Interlocked.Exchange(ref _stopping, 1) == 1)
+        {
+            // Deliberately not cancellable, as in Stop.
+            try { await _exited.Task.WaitAsync(StopWaitBound(), CancellationToken.None).ConfigureAwait(false); }
+            catch (TimeoutException) { }
+            return;
+        }
+
+        try
+        {
+            if (!SafeHasExited())
+            {
+                if (_options.GracefulStopTimeout is { } grace && !OperatingSystem.IsWindows() && grace > TimeSpan.Zero)
+                {
+                    _ = SendTerm(Pid);
+                    await WaitForProcessExitAsync(grace).ConfigureAwait(false);
+                }
+                ChildProcesses.KillTree(_process);
+            }
+        }
+        catch (InvalidOperationException) { }
+        finally
+        {
+            if (TryBeginFinish())
+                RecordStop(reason, await WaitForProcessExitAsync(_options.ShutdownTimeout).ConfigureAwait(false));
+        }
+    }
+
+    private TimeSpan StopWaitBound() =>
+        _options.ShutdownTimeout + (_options.GracefulStopTimeout ?? TimeSpan.Zero) + TimeSpan.FromSeconds(5);
+
+    // Process.WaitForExitAsync also waits for the redirected output to drain. False on timeout.
+    private async Task<bool> WaitForProcessExitAsync(TimeSpan timeout)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+        try
+        {
+            await _process.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) { return false; }
+        catch (InvalidOperationException) { return true; }
+    }
+
     // The process exited on its own (not because we stopped it).
     private void OnExited()
     {
@@ -329,17 +378,29 @@ public sealed class ManagedProcess : IAsyncDisposable, IDisposable
         Finish(ServiceStopReason.Exited);
     }
 
+    private bool TryBeginFinish() => Interlocked.Exchange(ref _finishedFlag, 1) == 0;
+
     private void Finish(string reason)
     {
-        if (Interlocked.Exchange(ref _finishedFlag, 1) == 1) return;
+        if (!TryBeginFinish()) return;
+        bool exited;
         try
         {
-            bool exited;
-            try { exited = _process.WaitForExit(Bound(_options.ShutdownTimeout)); }
-            catch (InvalidOperationException) { exited = true; }
+            exited = _process.WaitForExit(Bound(_options.ShutdownTimeout));
+            if (exited) _process.WaitForExit(); // flush the output readers
+        }
+        catch (InvalidOperationException) { exited = true; }
+        RecordStop(reason, exited);
+    }
+
+    // Record the stop (once, after TryBeginFinish) and release everything. The process has exited, or the wait for it
+    // timed out (exited false).
+    private void RecordStop(string reason, bool exited)
+    {
+        try
+        {
             if (exited)
             {
-                try { _process.WaitForExit(); } catch (InvalidOperationException) { } // flush the output readers
                 try { ExitCode = _process.ExitCode; } catch (InvalidOperationException) { }
             }
             StopReason = reason;
