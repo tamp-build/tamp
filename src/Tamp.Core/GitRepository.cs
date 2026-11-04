@@ -120,9 +120,9 @@ public sealed class GitRepository
         throw new InvalidOperationException($"Could not resolve ref '{refPath}' in {gitDir}");
     }
 
-    private static readonly Regex RemoteUrlRegex = new(
-        @"^\s*url\s*=\s*(?<url>.+?)\s*$",
-        RegexOptions.Compiled);
+    // `.*` then Trim, rather than `\s*(?<url>.+?)\s*$`: the lazy form re-tries `\s*$` at every
+    // character and goes quadratic on a long whitespace run. This form is linear.
+    private static readonly Regex RemoteUrlRegex = TampRegex.Create(@"^\s*url\s*=(?<url>.*)$");
 
     private static string? ReadOriginUrl(AbsolutePath gitDir)
     {
@@ -139,8 +139,8 @@ public sealed class GitRepository
                 continue;
             }
             if (!inOriginSection) continue;
-            var m = RemoteUrlRegex.Match(line);
-            if (m.Success) return m.Groups["url"].Value;
+            var m = TampRegex.Match(RemoteUrlRegex, line, $"a remote line of {configPath}");
+            if (m.Success && m.Groups["url"].Value.Trim() is { Length: > 0 } url) return url;
         }
         return null;
     }

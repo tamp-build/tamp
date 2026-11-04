@@ -581,8 +581,10 @@ internal sealed class TargetDefinition : ITargetDefinition
         return name;
     }
 
+    // Runs for every Target-typed DependsOn/Before/After/Triggers call. Anchored, one character class
+    // per position, no nesting: linear-time, so the shared timeout is belt-and-braces only.
     private static readonly System.Text.RegularExpressions.Regex SimpleIdentifier
-        = new(@"^[A-Za-z_][A-Za-z0-9_]*$", System.Text.RegularExpressions.RegexOptions.Compiled);
+        = TampRegex.Create(@"^[A-Za-z_][A-Za-z0-9_]*$");
 
     /// <summary>
     /// Validates and normalizes a CallerArgumentExpression-captured target reference.
@@ -597,7 +599,7 @@ internal sealed class TargetDefinition : ITargetDefinition
         var trimmed = expression.Trim();
         if (trimmed.StartsWith("this.", StringComparison.Ordinal))
             trimmed = trimmed.Substring(5);
-        if (!SimpleIdentifier.IsMatch(trimmed))
+        if (!TampRegex.Match(SimpleIdentifier, trimmed, $"the {callingMethod}() target reference").Success)
             throw new ArgumentException(
                 $"{callingMethod}() expects a simple target reference like 'Restore', got '{expression}'. " +
                 "Use the (string[]) overload for computed names.",
