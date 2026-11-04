@@ -28,8 +28,8 @@ on:
         type: boolean
         default: false
 
+# Read-only by default. Only the publish job can mint the OIDC token (see its permissions below).
 permissions:
-  id-token: write   # OIDC token for nuget.org trusted publishing
   contents: read
 
 env:
@@ -57,7 +57,7 @@ jobs:
       EVIDENCE_DIR: ${{ github.workspace }}/artifacts/evidence
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
@@ -68,7 +68,7 @@ jobs:
           fi
 
       - name: Install supported .NET SDKs
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           dotnet-version: |
             8.0.x
@@ -173,11 +173,16 @@ jobs:
     # here to re-enforce the gate once findings can go green.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    # The OIDC trusted-publishing claim is bound to this environment and this workflow's filename;
+    # neither changes here.
     environment: release
+    permissions:
+      contents: read
+      id-token: write   # OIDC token for nuget.org trusted publishing (NuGet/login). This job only.
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0   # source link wants the full history
 
@@ -219,7 +224,7 @@ jobs:
           exit 1
 
       - name: Install supported .NET SDKs
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           dotnet-version: |
             8.0.x
@@ -262,7 +267,7 @@ jobs:
         run: ls -la ./artifacts/
 
       - name: NuGet login (OIDC → temp API key)
-        uses: NuGet/login@v1
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         id: nuget-login
         with:
           user: BrewingCoder
@@ -295,7 +300,7 @@ jobs:
 
       - name: Upload packages as artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nupkgs
           path: ./artifacts/*.nupkg
