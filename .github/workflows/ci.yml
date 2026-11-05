@@ -16,7 +16,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # macos-latest is TEMPORARILY SUSPENDED (2026-11-05). GitHub's macOS arm64 pool has been
+        # failing to assign a runner: the job sits with runner_name empty and zero steps for ~15
+        # minutes and is then cancelled, so it never executes a single step and produces no runner
+        # log. Nothing in this workflow is involved — there is no timeout-minutes and no concurrency
+        # group here, and a job with zero steps cannot have been affected by either.
+        #
+        # Observed across tamp-build: tamp#130 on 2026-11-04, then tamp#160 and tamp-syft#12 on
+        # 2026-11-05 (the latter twice). The tell is decisive: tamp-grype acquired a macOS runner at
+        # 16:52:42 and tamp-syft's request five seconds later at 16:52:47 never got one. GitHub's
+        # status page showed all green throughout, as it did for the 2026-11-04 occurrence.
+        #
+        # RESTORE by adding macos-latest back to this list. Tracked in tamp#162 — this list is the
+        # only thing that needs changing, and the macOS steps below are unchanged and still correct.
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     env:
       DOTNET_NOLOGO: '1'

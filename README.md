@@ -267,3 +267,18 @@ Decision-making is currently BDFL with a single maintainer ([MAINTAINERS.md](MAI
 Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md); vulnerabilities go through [SECURITY.md](SECURITY.md).
 
 License: MIT — see [LICENSE](LICENSE) and [ADR 0007](docs/adr/0007-license-mit.md) for the rationale.
+
+## CI platform coverage
+
+> **macOS CI is temporarily suspended** (since 2026-11-05). GitHub's macOS arm64 runner pool has been
+> failing to assign a machine: the job sits with an empty `runner_name` and zero steps for about
+> fifteen minutes and is then cancelled, so it never runs a step and produces no log. That is a
+> GitHub-side assignment failure, not a workflow problem — and it was reporting as a red check on
+> pull requests that were otherwise green.
+>
+> **Linux and Windows CI are unchanged**, and the build still targets net8.0, net9.0 and net10.0 on
+> both. macOS remains a supported runtime for this package; what is paused is the CI leg that
+> verifies it, which means a macOS-specific regression could land unnoticed while this is in effect.
+>
+> Tracked in [tamp#162](https://github.com/tamp-build/tamp/issues/162). Restoring it is a one-line
+> change to the `os:` matrix in `.github/workflows/ci.yml`.
