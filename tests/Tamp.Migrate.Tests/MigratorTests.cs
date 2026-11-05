@@ -409,6 +409,7 @@ public sealed class MigratorTests
             public static int Main() => Execute<Build>(x => x.Compile);
 
             [Parameter("Configuration")] readonly Configuration Configuration = IsLocalBuild ? Configuration.Debug : Configuration.Release;
+            [Solution] readonly Solution Solution;
             [Secret] [Parameter] readonly string NuGetApiKey;
             [PathExecutable] readonly Tool Git;
 
@@ -425,7 +426,7 @@ public sealed class MigratorTests
                 .Executes(() =>
                 {
                     DotNetRestore(s => s
-                        .SetProjectFile("Example.sln"));
+                        .SetProjectFile(Solution));
                 });
 
             Target Compile => _ => _
@@ -459,19 +460,19 @@ public sealed class MigratorTests
 
         // auto: 5 usings (4 + the DotNetTasks using static), base class, entrypoint, [Parameter], IsLocalBuild,
         //       [PathExecutable], RootDirectory, AbsolutePath, CreateOrCleanDirectory, Before, DependsOn x2,
-        //       Executes x4, Produces, Target x4, and the 3 DotNet calls = 28.
-        Assert.Equal(new CoverageSummary(Applied: 28, Assisted: 1, Manual: 1, Unmapped: 0), report.Summary);
+        //       Executes x4, Produces, Target x4, the 3 DotNet calls, and [Solution] = 29.
+        Assert.Equal(new CoverageSummary(Applied: 29, Assisted: 1, Manual: 1, Unmapped: 0), report.Summary);
         Assert.Collection(report.Markers,
-            m => Assert.Equal(("injection.secret", Outcome.Assisted, 15), (m.RuleId, m.Outcome, m.Line)),
-            m => Assert.Equal(("logging.serilog", Outcome.Manual, 46), (m.RuleId, m.Outcome, m.Line)));
+            m => Assert.Equal(("injection.secret", Outcome.Assisted, 16), (m.RuleId, m.Outcome, m.Line)),
+            m => Assert.Equal(("logging.serilog", Outcome.Manual, 47), (m.RuleId, m.Outcome, m.Line)));
         Assert.Equal(3, report.Sites.Count(s => s.RuleId == "tool.dotnet" && s.Outcome == Outcome.Applied));
         Assert.Equal(["build/Build.cs"], report.ChangedFiles);
 
         var json = report.ToJson();
-        Assert.Contains("\"applied\": 28", json, StringComparison.Ordinal);
+        Assert.Contains("\"applied\": 29", json, StringComparison.Ordinal);
         Assert.Contains("\"ruleId\": \"logging.serilog\"", json, StringComparison.Ordinal);
         Assert.Contains("\"outcome\": \"Manual\"", json, StringComparison.Ordinal);
-        Assert.Contains("| `build/Build.cs:46` | `logging.serilog` | manual |", report.ToMarkdown(), StringComparison.Ordinal);
+        Assert.Contains("| `build/Build.cs:47` | `logging.serilog` | manual |", report.ToMarkdown(), StringComparison.Ordinal);
     }
 
     [Fact]

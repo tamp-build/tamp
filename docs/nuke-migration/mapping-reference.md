@@ -121,7 +121,7 @@ Settings method renames (the common ones):
 
 | NUKE setting | Tamp setting | Tier |
 |------|------|------|
-| `.SetProjectFile(x)` | `.SetProject(x)` | auto |
+| `.SetProjectFile(x)` | `.SetProject(x)` (a `Solution` converts to its path, as in NUKE) | auto |
 | `.SetConfiguration(x)` | `.SetConfiguration(x)` | auto |
 | `.SetNoRestore(true)` / `.EnableNoRestore()` | `.SetNoRestore(true)` | auto |
 | `.SetNoBuild(true)` / `.EnableNoBuild()` | `.SetNoBuild(true)` | auto |

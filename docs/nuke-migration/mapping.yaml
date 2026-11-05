@@ -504,7 +504,7 @@ tools:
     tier: auto
     verbs: { DotNetRestore: Restore, DotNetBuild: Build, DotNetTest: Test, DotNetPack: Pack, DotNetPublish: Publish, DotNetNuGetPush: NuGetPush, DotNetClean: Clean, DotNetFormat: Format }
     settings:
-      SetProjectFile: { to: SetProject, tier: auto }
+      SetProjectFile: { to: SetProject, tier: auto }   # a Solution argument converts to its path
       SetProject: { to: SetProject, tier: auto }
       SetConfiguration: { to: SetConfiguration, tier: auto }
       SetFramework: { to: SetFramework, tier: auto }
