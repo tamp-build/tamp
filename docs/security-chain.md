@@ -306,8 +306,27 @@ Roslynator + NetAnalyzers) emitted as SARIF via MSBuild's `/p:ErrorLog`.
 | Roslyn analyzers (Sonar + Roslynator + NetAnalyzers) | Dataflow-aware C# issues (`S6966 await WriteLineAsync`, `CA1510 ArgumentNullException.ThrowIfNull`, `S127 stop-condition mutation`, ~1400 findings on a clean Tamp tree) | Cross-language patterns; codified non-C# policy rules |
 
 Both emit SARIF. `SecurityScan` merges them via
-`Tamp.Sarif.SarifMerge.Combine` — runs are preserved separately so the
-tool-of-origin per finding stays identifiable downstream.
+`Tamp.Sarif.SarifMerge.CombineDistinct` — runs are preserved separately, so a consumer still sees
+every tool that ran, and duplicate results are collapsed. That dedup is the point here: the Roslyn
+leg emits one copy of each source-level finding per target framework via `/p:ErrorLog`, and
+`CombineDistinct` folds those back to one entry.
+
+> **Only code-scanner SARIF goes through this merge** ([#155](https://github.com/tamp-build/tamp/issues/155)).
+> The dedup key is `(ruleId, URI, line, column, logical fullyQualifiedName)` — it has no component or
+> version term of its own. A dependency scanner reports the advisory as `ruleId`, the lockfile as the
+> URI, the same line for every result, and the affected version only in the message text, so
+> **distinct affected versions of one package collapse into one result** — measured on grype
+> 0.112.0's native SARIF, 299 results become 268. That is why the CVE and Trivy SARIFs are published
+> separately rather than merged into `sast.sarif`, and why adding them to this merge would silently
+> under-report.
+>
+> A producer that puts component identity in `logicalLocations.fullyQualifiedName` is safe under the
+> default key — `Tamp.Grype` 0.2.0 puts the purl there, and the same document passes through 299 →
+> 299. Otherwise use `SarifMerge.Combine`, or pass a key selector to the `CombineDistinct` overload.
+
+Note also that `CombineDistinct` collapses duplicates *across* runs, so a finding two tools both
+reported is attributed to whichever run came first in input order. For deliberately overlapping
+scanners, where agreement between two independent tools is itself a signal, use `Combine`.
 
 ## Locked decisions
 
