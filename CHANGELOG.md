@@ -103,6 +103,16 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ### Added
 
+- **Every release now creates a GitHub Release, and every package points at its notes** ([#159](https://github.com/tamp-build/tamp/issues/159)). A release used to produce a NuGet package and a bare git tag, leaving two of the three places a human looks for "what changed" empty: the newest GitHub Release in this repo was **1.15.2** from 2026-09-27 while 1.19.0 was live on nuget.org, and `PackageReleaseNotes` was set nowhere, so the Release Notes section was blank for every package. `release.yml` had no `gh release` step — the three Releases that existed were made by hand and the habit lapsed for 15 consecutive tags, which is why this is automated rather than documented.
+
+  `release.yml` now creates (or edits, so re-runs and backfills are idempotent) the Release for the pushed tag, with the body taken from that version's `CHANGELOG.md` section and the `.nupkg` files attached as assets. `CHANGELOG.md` stays the single source of truth; both surfaces are derived from it and cannot drift. The extraction lives in [`.github/scripts/changelog-section.sh`](.github/scripts/changelog-section.sh), dependency-free so it can be copied verbatim into the satellites, and it handles all four heading shapes in use across the org — bracketed or bare, em dash or hyphen, with or without a title.
+
+  `PackageReleaseNotes` carries links rather than the text: embedded notes freeze at pack time and cannot be corrected, while a link always resolves to the current wording. **Deliberately no `#anchor`** — GitHub derives a heading anchor from the whole heading text, date and title included, so an anchor built from the version alone does not resolve and one built from the full heading would change every release. The release-tag URL is deterministic from the version and lands on that version's notes, so it supplies the per-version precision instead.
+
+  The publish job's `contents` permission moves from `read` to `write`, scoped to that job alone, because creating a Release requires it.
+
+  **Backfilled**: 49 GitHub Releases across 10 repos, so the Releases tab now matches nuget.org everywhere. Four tags (`v1.17.0`, `v1.17.4`, `v1.17.5`, and tamp-conformance `v0.1.1`) have **no `CHANGELOG.md` section at all** — the entries were never written. Their Releases say so plainly and link the commit range rather than reconstructing notes that would be guesswork.
+
 - **Build-wide cancellation and orderly interrupts** ([#125](https://github.com/tamp-build/tamp/issues/125), part 1). `tamp` now handles Ctrl+C, SIGTERM and SIGHUP itself instead of being killed mid-build:
   - The first signal cancels the new **`TampBuild.BuildCancellation`** token (also passed to the new `Executes(async ct => ...)` overloads) and **`ProcessRunner` kills the running tool's whole process tree** and starts nothing new.
   - The running target finishes with the new status **`cancelled`** (`reason: "signal: SIGINT"`; no remedy, no failure handlers), later targets are `not_run`, and `AssuredAfterFailure` cleanup targets still run with a fresh token that cancels when the shutdown grace period ends (default 10 s, `--shutdown-timeout <seconds>` / `TAMP_SHUTDOWN_TIMEOUT`).

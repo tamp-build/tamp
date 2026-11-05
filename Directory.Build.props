@@ -24,6 +24,7 @@
     <Company>Tamp Project</Company>
     <Copyright>Copyright (c) 2026 Scott Singleton</Copyright>
     <PackageProjectUrl>https://github.com/tamp-build/tamp</PackageProjectUrl>
+
     <RepositoryUrl>https://github.com/tamp-build/tamp</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -41,6 +42,22 @@
 
   <PropertyGroup Label="Tamp central version (TAM-81 — single source of truth for all packable projects in this repo). Bump this before tagging a release; csprojs do NOT carry their own Version element.">
     <Version>1.19.0</Version>
+
+    <!--
+      nuget.org renders this in the package's Release Notes section, which was empty for every
+      version before tamp#159.
+
+      A link rather than the text: embedded notes freeze at pack time and cannot be corrected
+      afterwards, while a link always resolves to the current wording.
+
+      Deliberately no "#anchor" on the CHANGELOG link. GitHub derives a heading anchor from the
+      WHOLE heading text, date and title included, not from the version alone. So an anchor built
+      from just the version does not resolve, and one built from the full heading would change with
+      every release. The release tag URL is deterministic from the version and lands on that
+      version's notes, so it carries the per-version precision the anchor was meant to provide.
+    -->
+    <PackageReleaseNotes>Changelog: https://github.com/tamp-build/tamp/blob/main/CHANGELOG.md
+This release: https://github.com/tamp-build/tamp/releases/tag/v$(Version)</PackageReleaseNotes>
   </PropertyGroup>
 
   <!--
