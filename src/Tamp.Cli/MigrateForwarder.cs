@@ -13,6 +13,17 @@ internal static class MigrateForwarder
     internal const string PackageId = "Tamp.Migrate";
     private const int ExitDispatchFailed = 3;
 
+    /// <summary>
+    /// Exit codes Tamp.Migrate produces itself: 0 success, 2 usage, 3 a dirty working tree. On any of these
+    /// the tool ran and has already said what was wrong, so the "needs the .NET 10 SDK" hint below would be
+    /// noise under a correct message. Anything else means `dotnet tool execute` never got the tool running.
+    /// Keep in step with Tamp.Migrate's Program.ExitUsage / ExitDirtyTree.
+    /// </summary>
+    private static readonly int[] MigrateOwnExitCodes = [0, 2, 3];
+
+    /// <summary>Whether a <c>dotnet tool execute</c> exit code means the tool itself never ran.</summary>
+    internal static bool DispatchFailed(int exitCode) => !MigrateOwnExitCodes.Contains(exitCode);
+
     public static int Run(IReadOnlyList<string> args)
     {
         if (ExecutableLocator.Current.ResolveDotnet() is not { } dotnet)
@@ -33,7 +44,7 @@ internal static class MigrateForwarder
                 return ExitDispatchFailed;
             }
             process.WaitForExit();
-            if (process.ExitCode != 0)
+            if (DispatchFailed(process.ExitCode))
             {
                 Console.Error.WriteLine();
                 Console.Error.WriteLine($"tamp: `tamp migrate` runs {PackageId} {PackageVersion} with `dotnet tool execute`, which needs the .NET 10 SDK.");
