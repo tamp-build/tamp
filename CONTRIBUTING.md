@@ -57,7 +57,46 @@ docs/adr/            Architecture Decision Records (MADR format)
 3. **Keep PRs scoped to one project's surface plus the Core changes that justify it** ([ADR 0006 §Negative](docs/adr/0006-repo-layout-monorepo.md)). A PR that touches everything is harder to review than three focused ones.
 4. **Tests are mandatory** for new behavior — boundary values, null/empty inputs, unicode, concurrency where applicable. The bar is "tests find bugs," not "tests cover lines."
 5. **Run the full matrix locally** before pushing — `dotnet test Tamp.slnx`. CI will catch what you missed; saving CI cycles is polite.
-6. **Commit messages** use a leading conventional-style prefix (`feat:`, `fix:`, `docs:`, `build:`, `ci:`, `chore:`, `refactor:`, `test:`). Body explains the *why*; the diff already shows the *what*.
+6. **Close the issue with a comment, not just a merge** — see [Closing an issue](#closing-an-issue). A `Closes #N` alone closes it silently.
+7. **Commit messages** use a leading conventional-style prefix (`feat:`, `fix:`, `docs:`, `build:`, `ci:`, `chore:`, `refactor:`, `test:`). Body explains the *why*; the diff already shows the *what*.
+
+## Closing an issue
+
+An issue is a question someone asked. Closing it without answering leaves the next reader — human or
+agent — to reconstruct what happened from a diff.
+
+**Never let a merge close an issue silently.** A `Closes #N` in a PR body closes the issue with no
+explanation attached, so post a closing comment as well. It is the only place the whole story is
+written down in one piece.
+
+A closing comment says, briefly:
+
+1. **What was done**, in a sentence or two — including anything that turned out differently from what
+   the issue proposed, and why.
+2. **Where it landed** — the PR, and the merge commit.
+3. **Which release carries it**, with the version and package. If it is merged but unreleased, say
+   that instead and say so plainly: *"merged to `main`, unreleased"*. Do not imply a fix is available
+   when it is not installable.
+4. **What was deliberately not done** — scope dropped, a follow-up filed, a constraint that could not
+   be met. If the issue's acceptance criteria cannot be verified from here, say which ones and what
+   would verify them.
+
+When the fix ships later than the merge, **go back and comment the version** on the already-closed
+issue. An issue that says "fixed" without a version cannot be acted on by someone deciding whether to
+upgrade.
+
+```markdown
+Fixed in **Tamp.Grype 0.2.0** — https://www.nuget.org/packages/Tamp.Grype/0.2.0
+
+PR #7, merged as `2031f57`. SARIF is now built from grype's JSON rather than patched after the
+fact, because the affected version only exists in the message prose (see the PR for the measurements).
+
+Not done: ingestion against GitLab itself is unverified — schema-shaped correctness is necessary but
+not sufficient, and the acceptance test needs a pipeline run.
+```
+
+Same rule for an issue closed **without** a change: say why — not reproducible, working as intended,
+superseded by #M. "Closed" with no comment reads as "ignored", and the question comes back.
 
 ## Proposing an ADR
 
