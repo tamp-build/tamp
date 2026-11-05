@@ -11,10 +11,16 @@ public sealed record SourceFile(string Path, string Text);
 
 /// <summary>Knobs for a migration run.</summary>
 /// <param name="PackageMajor">Major for <c>{N}</c>-versioned wrappers (<c>Tamp.NetCli.V{N}</c>); default: the newest the mapping lists.</param>
-public sealed record MigrationOptions(int? PackageMajor = null);
+/// <param name="TampVersion">Version for the Tamp package references; default: this tool's own (one release train).</param>
+/// <param name="BuildDirectory">The NUKE build project's directory, relative to the repository root.</param>
+public sealed record MigrationOptions(int? PackageMajor = null, string? TampVersion = null, string BuildDirectory = "build");
 
-/// <summary>The rewritten files (same order as the input) and the coverage report.</summary>
-public sealed record MigrationResult(IReadOnlyList<SourceFile> Files, MigrationReport Report);
+/// <summary>The rewritten files (same order as the input), the other files the migration writes, and the coverage report.</summary>
+public sealed record MigrationResult(IReadOnlyList<SourceFile> Files, IReadOnlyList<GeneratedFile> Generated, MigrationReport Report)
+{
+    /// <summary>Build files the migration leaves empty (e.g. the template <c>Configuration.cs</c>): delete them.</summary>
+    public IReadOnlyList<string> Deleted { get; init; } = [];
+}
 
 /// <summary>
 /// The <c>tamp migrate nuke</c> rewriter (ADR 0021, Phase 2). Syntactic only: it parses the NUKE build with
@@ -49,10 +55,12 @@ public sealed class NukeMigrator
     internal static bool IsSupported(MappingRule r) => (r.MatchKind, r.RewriteKind, r.Handler) switch
     {
         ("base_type", "rename" or "keep", _) => true,
+        ("base_type", "handler", "configuration-class") => true,
         ("attribute", null or "keep" or "rename", _) => true,
         ("attribute", "handler", "secret-field" or "from-path") => true,
         ("invocation", null or "keep" or "rename" or "template", _) => true,
         ("identifier", null or "keep" or "rename", _) => true,
+        ("member", null or "keep" or "rename", _) => true,
         ("using", "handler", "usings" or "components-namespace") => true,
         ("entrypoint", "handler", "entrypoint-default") => true,
         ("field_invocation", null or "template", _) => true,
@@ -61,8 +69,9 @@ public sealed class NukeMigrator
     };
 
     /// <param name="files">The build's C# files.</param>
-    /// <param name="repositoryFiles">Repository-relative paths, for the <c>file</c> rules (bootstrap scripts).</param>
-    public MigrationResult Migrate(IReadOnlyList<SourceFile> files, IEnumerable<string>? repositoryFiles = null)
+    /// <param name="repositoryFiles">Repository-relative paths, for the <c>file</c> rules (build project, bootstrap scripts).</param>
+    /// <param name="readFile">Reads a repository-relative file the <c>file</c> rules rewrite; null when it doesn't exist.</param>
+    public MigrationResult Migrate(IReadOnlyList<SourceFile> files, IEnumerable<string>? repositoryFiles = null, Func<string, string?>? readFile = null)
     {
         var sites = new List<MigrationSite>();
         var trees = files.Select(f => CSharpSyntaxTree.ParseText(f.Text, ParseOptions, f.Path)).ToList();
@@ -73,24 +82,33 @@ public sealed class NukeMigrator
         EntryPoint(migrations, build);
 
         var output = new List<SourceFile>();
+        var deleted = new List<string>();
         var changed = new List<string>();
         for (var i = 0; i < files.Count; i++)
         {
             var text = migrations[i].Apply();
+            if (migrations[i].EmptiedByMigration) deleted.Add(files[i].Path);
             if (text != files[i].Text) changed.Add(files[i].Path);
             output.Add(new SourceFile(files[i].Path, text));
         }
 
-        if (repositoryFiles is not null) FileRules(repositoryFiles.ToList(), sites);
+        var generated = new List<GeneratedFile>();
+        if (repositoryFiles is not null)
+        {
+            var scaffolder = new BuildScaffolder(_mapping, _options, repositoryFiles.Select(f => f.Replace('\\', '/')).ToList(), readFile ?? (_ => null));
+            scaffolder.Run(migrations.SelectMany(m => m.Packages).ToHashSet(StringComparer.Ordinal));
+            generated = scaffolder.Generated;
+            sites.AddRange(scaffolder.Sites);
+        }
 
         var ordered = sites.OrderBy(s => s.File, StringComparer.Ordinal).ThenBy(s => s.Line).ThenBy(s => s.RuleId, StringComparer.Ordinal).ToList();
-        return new MigrationResult(output, new MigrationReport
+        return new MigrationResult(output, generated, new MigrationReport
         {
             MappingVersion = _mapping.Version,
             Files = files.Select(f => f.Path).ToList(),
-            ChangedFiles = changed,
+            ChangedFiles = changed.Concat(generated.Select(g => g.Path)).ToList(),
             Sites = ordered,
-        });
+        }) { Deleted = deleted };
     }
 
     // `Main() => Execute<Build>(x => x.Compile)` -> `Main(string[] args) => Execute<Build>(args)` plus
@@ -144,23 +162,6 @@ public sealed class NukeMigrator
         return method.ReplaceNode(call, call.WithArgumentList(args.WithTriviaFrom(call.ArgumentList)));
     }
 
-    private void FileRules(List<string> repositoryFiles, List<MigrationSite> sites)
-    {
-        foreach (var rule in _mapping.Rules.Where(r => r.MatchKind == "file"))
-        {
-            var matched = rule.Globs
-                .Select(g => repositoryFiles.FirstOrDefault(f => GlobMatches(g, f.Replace('\\', '/'))))
-                .Where(f => f is not null)
-                .Distinct(StringComparer.Ordinal);
-            foreach (var file in matched)
-                sites.Add(new MigrationSite(file!, 0, rule.Id, Outcome.Manual, rule.Marker));
-        }
-    }
-
-    private static bool GlobMatches(string glob, string path) =>
-        glob.EndsWith("/**", StringComparison.Ordinal)
-            ? path.StartsWith(glob[..^2], StringComparison.OrdinalIgnoreCase)
-            : string.Equals(glob, path, StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>Facts about the whole build gathered before any file is rewritten (partial classes span files).</summary>
@@ -171,12 +172,16 @@ internal sealed class BuildIndex
     /// <summary>Fields carrying a <c>field_invocation</c> rule's attributes (NUKE <c>Tool</c> delegates).</summary>
     public required HashSet<string> ToolFields { get; init; }
 
+    /// <summary>The build declares the <c>nuke :setup</c> template Configuration, which the migration removes.</summary>
+    public required bool TemplateConfiguration { get; init; }
+
     public static BuildIndex Create(MigrationMapping mapping, IEnumerable<SyntaxTree> trees)
     {
         var toolAttributes = mapping.Rules.Where(r => r.MatchKind == "field_invocation")
             .SelectMany(r => r.Attributes).ToHashSet(StringComparer.Ordinal);
         var targets = new Dictionary<string, TargetInfo>(StringComparer.Ordinal);
         var fields = new HashSet<string>(StringComparer.Ordinal);
+        var templateConfiguration = false;
 
         foreach (var root in trees.Select(t => t.GetRoot()))
         {
@@ -191,6 +196,8 @@ internal sealed class BuildIndex
                 targets.TryAdd(p.Identifier.Text, new TargetInfo(id, isDefault));
             }
 
+            templateConfiguration |= root.DescendantNodes().OfType<ClassDeclarationSyntax>().Any(Syntax.IsTemplateConfiguration);
+
             foreach (var f in root.DescendantNodes().OfType<FieldDeclarationSyntax>())
             {
                 if (!f.AttributeLists.SelectMany(l => l.Attributes).Any(a => toolAttributes.Contains(Syntax.AttributeName(a)))) continue;
@@ -198,7 +205,7 @@ internal sealed class BuildIndex
             }
         }
 
-        return new BuildIndex { Targets = targets, ToolFields = fields };
+        return new BuildIndex { Targets = targets, ToolFields = fields, TemplateConfiguration = templateConfiguration };
     }
 }
 
@@ -233,6 +240,22 @@ internal static class Syntax
     /// <summary>The receiver of <c>x.Name(..)</c>, or null for an unqualified call.</summary>
     public static ExpressionSyntax? Receiver(InvocationExpressionSyntax inv) =>
         inv.Expression is MemberAccessExpressionSyntax ma ? ma.Expression : null;
+
+    /// <summary>
+    /// The <c>nuke :setup</c> template: <c>class Configuration : Enumeration</c> holding only static Debug/Release
+    /// fields and conversion operators.
+    /// </summary>
+    public static bool IsTemplateConfiguration(ClassDeclarationSyntax cls) =>
+        cls.Identifier.Text == "Configuration"
+        && cls.BaseList?.Types.Any(t => t.Type.ToString() is "Enumeration" or "Nuke.Common.Tooling.Enumeration") == true
+        && cls.Members.OfType<FieldDeclarationSyntax>().SelectMany(f => f.Declaration.Variables).Any()
+        && cls.Members.All(m => m switch
+        {
+            FieldDeclarationSyntax f => f.Modifiers.Any(SyntaxKind.StaticKeyword)
+                && f.Declaration.Variables.All(v => v.Identifier.Text is "Debug" or "Release"),
+            ConversionOperatorDeclarationSyntax => true,
+            _ => false,
+        });
 
     /// <summary>An attribute's simple name without the <c>Attribute</c> suffix.</summary>
     public static string AttributeName(AttributeSyntax a)

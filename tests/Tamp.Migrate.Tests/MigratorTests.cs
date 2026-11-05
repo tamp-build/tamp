@@ -52,6 +52,7 @@ public sealed class MigratorTests
         { "target_dsl.executes", "    Target B => _ => _.Executes(() => { });\n", "    Target B => _ => _.Executes(() => { });\n" },
         { "target_dsl.description", "    Target B => _ => _.Description(\"b\");\n", "    Target B => _ => _.Description(\"b\");\n" },
         { "target_dsl.produces", "    Target B => _ => _.Produces(RootDirectory / \"*.nupkg\");\n", "    Target B => _ => _.Produces(RootDirectory / \"*.nupkg\");\n" },
+        { "injection.solution-all-projects", "    int N(Solution s) => s.AllProjects.Count;\n", "    int N(Solution s) => s.Projects.Count;\n" },
         { "target_dsl.assured-after-failure", "    Target B => _ => _.AssuredAfterFailure();\n", "    Target B => _ => _.AssuredAfterFailure();\n" },
     };
 
@@ -199,6 +200,8 @@ public sealed class MigratorTests
         { "target_dsl.unmapped", "    Target B => _ => _.TryDependsOn(\"A\");\n" },
         { "logging.serilog", "    void L() { Log.Information(\"x {Y}\", 1); }\n" },
         { "components.unshipped", "    interface IX : IPublish { }\n" },
+        { "boilerplate.lifecycle-hooks", "    protected override void OnBuildInitialized() { }\n" },
+        { "boilerplate.configure-delegate", "    Configure<DotNetPackSettings> PackSettings => _ => _;\n" },
     };
 
     [Theory]
@@ -226,8 +229,9 @@ public sealed class MigratorTests
     public void Every_Non_Auto_Code_Rule_Has_A_Marker_Case()
     {
         var covered = MarkedCases.Select(c => (string)c[0]).ToHashSet();
-        // using / file rules are covered by their own tests below.
-        var marked = Mapping.Rules.Where(r => r.Tier != Tier.Auto && r.MatchKind is not ("using" or "file")).Select(r => r.Id);
+        // using / file rules, and configuration-class (its class is removed, so its markers land elsewhere),
+        // are covered by their own tests below.
+        var marked = Mapping.Rules.Where(r => r.Tier != Tier.Auto && r.MatchKind is not ("using" or "file") && r.Handler != "configuration-class").Select(r => r.Id);
         Assert.Empty(marked.Except(covered));
     }
 
@@ -296,8 +300,10 @@ public sealed class MigratorTests
     {
         var result = new NukeMigrator(Mapping).Migrate([new SourceFile("build/Build.cs", NukeHeader + "}\n")],
             ["build.sh", "build.cmd", "README.md", ".nuke/parameters.json", ".nuke/temp/x"]);
-        var files = result.Report.Sites.Where(s => s.RuleId == "boilerplate.bootstrap-scripts").Select(s => s.File).ToList();
-        Assert.Equal([".nuke/parameters.json", "build.cmd", "build.sh"], files); // report order: by file
+        var sites = result.Report.Sites.Where(s => s.RuleId == "boilerplate.bootstrap-scripts").ToList();
+        Assert.Equal([".nuke/parameters.json", "build.cmd", "build.sh"], sites.Select(s => s.File)); // one per glob, by file
+        Assert.All(sites, s => Assert.Equal(Outcome.Assisted, s.Outcome)); // the tamp init bootstrap was generated
+        Assert.Equal(["tamp.sh", "tamp.cmd", ".config/dotnet-tools.json"], result.Generated.Select(g => g.Path));
     }
 
     [Fact]
@@ -309,6 +315,73 @@ public sealed class MigratorTests
         ]);
         Assert.Contains("Target Pack => _ => _.Default()\n", result.Files[1].Text, StringComparison.Ordinal);
         Assert.Equal(["build/Build.cs", "build/Build.Pack.cs"], result.Report.ChangedFiles);
+    }
+
+    private const string TemplateConfiguration = """
+        using System.ComponentModel;
+        using Nuke.Common.Tooling;
+
+        [TypeConverter(typeof(TypeConverter<Configuration>))]
+        public class Configuration : Enumeration
+        {
+            public static Configuration Debug = new Configuration { Value = nameof(Debug) };
+            public static Configuration Release = new Configuration { Value = nameof(Release) };
+
+            public static implicit operator string(Configuration configuration)
+            {
+                return configuration.Value;
+            }
+        }
+
+        """;
+
+    [Fact]
+    public void The_Template_Configuration_File_Is_Deleted_So_Tamps_Configuration_Applies()
+    {
+        var result = new NukeMigrator(Mapping).Migrate([
+            new SourceFile("build/Build.cs", NukeHeader + "    public static int Main() => Execute<Build>();\n    [Parameter] readonly Configuration Configuration = IsLocalBuild ? Configuration.Debug : Configuration.Release;\n}\n"),
+            new SourceFile("build/Configuration.cs", TemplateConfiguration),
+        ]);
+
+        Assert.Equal(["build/Configuration.cs"], result.Deleted);
+        Assert.Contains(result.Report.Sites, s => s.File == "build/Configuration.cs" && s.RuleId == "boilerplate.configuration-class" && s.Outcome == Outcome.Assisted);
+        // Tamp's Configuration is an enum, not NUKE's string-like class: the member that uses it says so.
+        Assert.Contains("    // TAMP-MIGRATE(boilerplate.configuration-class): Configuration is now Tamp's built-in enum", result.Files[0].Text, StringComparison.Ordinal);
+        // What's left compiles against Tamp's own Configuration.
+        var errors = Compile(result.Files[0].Text);
+        Assert.True(errors.Count == 0, string.Join("\n", errors));
+    }
+
+    [Theory]
+    [InlineData("    public static Configuration Debug = new Configuration { Value = nameof(Debug) };\n    public static Configuration Staging = new Configuration { Value = nameof(Staging) };", "values beyond Debug/Release")]
+    [InlineData(null, "NUKE's Enumeration has no Tamp equivalent")]
+    public void Other_Enumerations_Are_Marked_Not_Removed(string? members, string why)
+    {
+        var source = members is null
+            ? "using Nuke.Common.Tooling;\n\npublic class Channel : Enumeration\n{\n    public static Channel Beta = new Channel { Value = \"beta\" };\n}\n"
+            : "using Nuke.Common.Tooling;\n\npublic class Configuration : Enumeration\n{\n" + members + "\n}\n";
+        var result = new NukeMigrator(Mapping).Migrate([new SourceFile("build/X.cs", source)]);
+
+        Assert.Empty(result.Deleted);
+        Assert.Contains("public class", result.Files[0].Text, StringComparison.Ordinal);
+        Assert.Contains(result.Report.Sites, s => s.RuleId == "boilerplate.configuration-class" && s.Outcome == Outcome.Manual && s.Marker!.Contains(why, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_Nuke_Settings_Type_That_Now_Names_Tamps_Is_Flagged()
+    {
+        // Same class name in both: after the usings change it silently retargets to Tamp's type.
+        var (output, report) = Run(NukeDotNetHeader + "    DotNetBuildSettings Defaults(DotNetBuildSettings s) => s.SetAssemblyVersion(\"1.0\");\n}\n");
+        Assert.Contains("// TAMP-MIGRATE(tool.dotnet): DotNetBuildSettings here was NUKE's settings type", output, StringComparison.Ordinal);
+        Assert.Contains(report.Sites, s => s.RuleId == "tool.dotnet" && s.Outcome == Outcome.Manual);
+    }
+
+    [Fact]
+    public void Qualified_Serilog_Calls_Are_Marked_Too()
+    {
+        var (output, report) = Run(NukeHeader + "    void L() { Serilog.Log.Information(\"x\"); }\n}\n");
+        Assert.Contains("// TAMP-MIGRATE(logging.serilog): ", output, StringComparison.Ordinal);
+        Assert.Single(report.Sites, s => s.RuleId == "logging.serilog");
     }
 
     [Fact]

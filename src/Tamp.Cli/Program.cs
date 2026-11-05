@@ -39,7 +39,11 @@ internal static class Program
             return InitCommand.Run(initArgs);
         }
 
-        // `tamp mcp` (#22) — start the MCP control-surface server over stdio. It introspects
+        // `tamp migrate nuke ...` (ADR 0021): forwarded to the separate Tamp.Migrate tool, which carries Roslyn.
+        if (args.Length > 0 && args[0] == "migrate")
+            return MigrateForwarder.Run(args[1..]);
+
+                // `tamp mcp` (#22) — start the MCP control-surface server over stdio. It introspects
         // and drives the build project (found the same way as normal dispatch).
         if (args.Length > 0 && args[0] == "mcp")
         {
@@ -124,6 +128,7 @@ internal static class Program
         Console.WriteLine("USAGE:");
         Console.WriteLine("  dotnet tamp init [--solution <path>] [--dry-run]    scaffold Build.cs into the current dir");
         Console.WriteLine("  dotnet tamp mcp                                     start the MCP control-surface server (stdio)");
+        Console.WriteLine("  dotnet tamp migrate nuke [--dry-run] [...]          convert a NUKE build to Tamp (preview; runs Tamp.Migrate)");
         Console.WriteLine("  dotnet tamp <target> [--dry-run | --plan | --list | --list-tree] [--<param> <value>]");
         Console.WriteLine("  dotnet tamp --version | --help");
         Console.WriteLine();
