@@ -8,6 +8,38 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+### Fixed
+
+- **A skipped security scan no longer reports as a clean one** ([#151](https://github.com/tamp-build/tamp/issues/151)). `SecurityPipelineMetrics.EmitFindingsFromSarif` returned `0` when the SARIF did not exist, and `EmitComponentsFromBom` did the same for a missing BOM, so `tamp.security.scan.findings_count` emitted the same observation — nothing — for *"this scanner ran and found nothing"* and *"this scanner never ran"*. An unsettled Dependency-Track analysis likewise logged a line and let `SecurityPush` go green. In all three places an **unknown** outcome was reported as a **good** one, which is the failure direction a security control must never take.
+
+  Evidence now carries its own reliability instead of having it inferred from a count: `SecurityEvidenceStatus` is `NotRun`, `Unreadable` or `Completed`, and only the last makes a count of zero mean "looked and found nothing". New readers `ReadSarifScan`, `ReadSarifScanDirectory`, `ReadScan` and `ReadBom` return a `SecurityScanReport` / `SecuritySbomReport` saying *why* there is no result. `EmitFindingsFromSarif` and `EmitComponentsFromBom` keep their signatures and now emit the status too, so existing callers get the fix without a change.
+
+  Two new counters carry the signal `findings_count` structurally cannot: **`tamp.security.scan.status`** and **`tamp.security.sbom.status`**, tagged by tool/producer and `status`. A clean scan emits no findings point, so absence of `findings_count` was never evidence of anything — **alert on `status="not_run"`**. Counts from an unreliable read are deliberately not emitted at all.
+
+### Added
+
+- **An enforcement stage, after publication rather than before it** ([#151](https://github.com/tamp-build/tamp/issues/151)). Both publishing targets depended on the scan targets, so the natural way to add a gate — failing a scan on findings — skipped `SecurityPush` and `SecurityMetrics`, and therefore the SBOM push, the SARIF upload and the metrics, **in exactly the runs where findings existed**. Evidence arrived reliably when there was nothing to report and unreliably when there was.
+
+  `tamp Security` is now three ordered stages: **collect** (`SecurityCollect`) → **publish** (`SecurityMetrics` + `SecurityPush`, unconditional) → **enforce** (`SecurityGate`). Every stage from collect onward is `AssuredAfterFailure()`, so failing the gate costs no evidence and one scanner crashing does not suppress the others' output.
+
+- **`EnforceSecurityPolicy(SecurityEvidenceSummary)`** — the policy seam, called by `SecurityGate` after both publishing targets. Default implementation does nothing: a severity threshold is the adopter's decision, not core's. The summary carries per-scanner counts, `FindingsAtOrAbove(level)`, the SBOM, publication outcomes and `ReliabilityProblems`.
+
+- **An evidence receipt** at `artifacts/security/security-receipt.json` (`SecurityReceiptFile`), written **before** the gate throws — the run where evidence matters most is the run where something went wrong. `findings` is `null`, not `0`, for a scan with no result, so a reader cannot mistake "no result" for "found nothing". A green publishing job is weak evidence that a consumer accepted anything, since most ingestion is asynchronous; the receipt is what gives a *missing* report a single meaning.
+
+- **`SecurityExpectedScans`** — the scans the pipeline expects, which is what turns "did this scan run?" into an answerable question. An adopter who deliberately drops a scanner removes it here, stating that the surface is not covered rather than leaving a silent gap. The merged `sast.sarif` is deliberately not in the set: it derives from the OpenGrep and Roslyn outputs, and counting it too would double every SAST finding.
+
+- **`SecurityPublicationStatus`** distinguishes `NotConfigured` (credentials unset — still a green outcome, as before) from `Completed`, `Incomplete` and `Failed`. An unsettled Dependency-Track analysis is now `Incomplete` and fails the gate rather than passing as a successful push.
+
+### Changed
+
+- **`SecurityGate` fails by default when the evidence cannot be relied on** — an expected scan that did not run, an unreadable output, an absent or empty SBOM, or a publication that was attempted and did not land. This is evidence integrity, not severity policy.
+
+  **This is the one behavioural change that can fail a build that used to pass.** A scanner that is not installed previously produced a skipped target, zero findings and a green build. Three ways to go green again, the first two being the honest ones: install the scanner; remove it from `SecurityExpectedScans`; or set `SecurityRequireReliableEvidence` to `false`, which keeps the receipt and the `status` metrics so the gap stays visible even though it no longer blocks. Tamp's own CI is unaffected — nothing in it invokes the aggregate `Security` target.
+
+  An SBOM that parsed but holds zero components counts as unreliable: every SCA result derived from it is *vacuously* clean, which is the most convincing kind of false negative.
+
+- **Roslyn findings emit one status point per scan rather than one per file.** The Roslyn leg writes one SARIF per (project, TFM); those are now read as a single scan, so a corrupt file among them makes the whole scan `Unreadable` rather than silently understating the surface by an unmeasurable amount. Findings totals and tag keys are unchanged — they are still summed across files, not deduplicated.
+
 ## [1.19.0] — 2026-11-04 — `tamp migrate nuke` (preview); PATH, regex and reliability hardening
 
 ### Added

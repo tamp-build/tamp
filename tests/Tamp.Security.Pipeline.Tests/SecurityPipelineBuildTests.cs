@@ -82,7 +82,13 @@ public sealed class SecurityPipelineBuildTests : IDisposable
         public Target T_Trivy => SecurityScanTrivy;
         public Target T_Push => SecurityPush;
         public Target T_Metrics => SecurityMetrics;
+        public Target T_Collect => SecurityCollect;
+        public Target T_Gate => SecurityGate;
         public Target T_Security => Security;
+        public bool RequireReliableEvidence => SecurityRequireReliableEvidence;
+        public AbsolutePath ReceiptFile => SecurityReceiptFile;
+        public IReadOnlyList<SecurityScanSource> ExpectedScans => SecurityExpectedScans;
+        public SecurityEvidenceSummary ReadEvidence() => ReadSecurityEvidence();
     }
 
     /// <summary>Build that overrides every optional knob + points artifacts at a temp dir.</summary>
@@ -123,6 +129,11 @@ public sealed class SecurityPipelineBuildTests : IDisposable
         public Target T_Trivy => SecurityScanTrivy;
         public Target T_Push => SecurityPush;
         public Target T_Metrics => SecurityMetrics;
+        public Target T_Collect => SecurityCollect;
+        public Target T_Gate => SecurityGate;
+        public AbsolutePath ReceiptFile => SecurityReceiptFile;
+        public IReadOnlyList<SecurityScanSource> ExpectedScans => SecurityExpectedScans;
+        public SecurityEvidenceSummary ReadEvidence() => ReadSecurityEvidence();
     }
 
     // ============================================================
@@ -136,90 +147,7 @@ public sealed class SecurityPipelineBuildTests : IDisposable
         return def;
     }
 
-    private sealed class RecordingDef : ITargetDefinition
-    {
-        public string? RecordedDescription { get; private set; }
-        public List<string> RecordedDependencies { get; } = new();
-
-        private Action? _action;
-        private Func<CommandPlan>? _plan;
-        private Func<IEnumerable<CommandPlan>>? _plans;
-        private Func<Task>? _asyncAction;
-        private Func<Task<CommandPlan>>? _asyncPlan;
-        private Func<Task<IEnumerable<CommandPlan>>>? _asyncPlans;
-
-        public bool HasExecutes => _action is not null || _plan is not null || _plans is not null
-            || _asyncAction is not null || _asyncPlan is not null || _asyncPlans is not null;
-
-        /// <summary>Run whatever the target registered; returns produced plans (may be empty).</summary>
-        public IReadOnlyList<CommandPlan> RunExecutes()
-        {
-            var produced = new List<CommandPlan>();
-            _action?.Invoke();
-            if (_plan is not null) produced.Add(_plan());
-            if (_plans is not null) produced.AddRange(_plans());
-            if (_asyncAction is not null) _asyncAction().GetAwaiter().GetResult();
-            if (_asyncPlan is not null) produced.Add(_asyncPlan().GetAwaiter().GetResult());
-            if (_asyncPlans is not null) produced.AddRange(_asyncPlans().GetAwaiter().GetResult());
-            return produced;
-        }
-
-        public ITargetDefinition Description(string description) { RecordedDescription = description; return this; }
-        public ITargetDefinition DependsOn(params string[] targetNames) { RecordedDependencies.AddRange(targetNames); return this; }
-        public ITargetDefinition DependsOn(Target target, string? name = null) { if (name is not null) RecordedDependencies.Add(name); return this; }
-        public ITargetDefinition DependsOn(Target t1, Target t2, params Target[] more) => this;
-
-        public ITargetDefinition Executes(Action action) { _action = action; return this; }
-        public ITargetDefinition Executes(Func<CommandPlan> planFactory) { _plan = planFactory; return this; }
-        public ITargetDefinition Executes(Func<IEnumerable<CommandPlan>> planFactory) { _plans = planFactory; return this; }
-        public ITargetDefinition Executes(Func<Task> asyncAction) { _asyncAction = asyncAction; return this; }
-        public ITargetDefinition Executes(Func<Task<CommandPlan>> asyncPlanFactory) { _asyncPlan = asyncPlanFactory; return this; }
-        public ITargetDefinition Executes(Func<Task<IEnumerable<CommandPlan>>> asyncPlanFactory) { _asyncPlans = asyncPlanFactory; return this; }
-
-        // Everything else is a no-op recorder returning this.
-        public ITargetDefinition Phase(Phase phase) => this;
-        public ITargetDefinition Phase(Phase phase, PhaseDescriptor descriptor) => this;
-        public ITargetDefinition Tag(params string[] tags) => this;
-        public ITargetDefinition TopLevel() => this;
-        public ITargetDefinition Internal() => this;
-        public ITargetDefinition Default() => this;
-        public ITargetDefinition After(params string[] targetNames) => this;
-        public ITargetDefinition After(Target target, string? name = null) => this;
-        public ITargetDefinition After(Target t1, Target t2, params Target[] more) => this;
-        public ITargetDefinition Before(params string[] targetNames) => this;
-        public ITargetDefinition Before(Target target, string? name = null) => this;
-        public ITargetDefinition Before(Target t1, Target t2, params Target[] more) => this;
-        public ITargetDefinition Triggers(params string[] targetNames) => this;
-        public ITargetDefinition Triggers(Target target, string? name = null) => this;
-        public ITargetDefinition Triggers(Target t1, Target t2, params Target[] more) => this;
-        public ITargetDefinition TriggeredBy(params string[] targetNames) => this;
-        public ITargetDefinition TriggeredBy(Target target, string? name = null) => this;
-        public ITargetDefinition TriggeredBy(Target t1, Target t2, params Target[] more) => this;
-        public ITargetDefinition OnFailureOf(params string[] targetNames) => this;
-        public ITargetDefinition OnFailureOf(Target target, string? name = null) => this;
-        public ITargetDefinition OnFailureOf(Target t1, Target t2, params Target[] more) => this;
-        public ITargetDefinition OnlyWhen(Func<bool> condition, string expressionText = "") => this;
-        public ITargetDefinition Requires(Func<bool> condition, string expressionText = "") => this;
-        public ITargetDefinition AssuredAfterFailure() => this;
-        public ITargetDefinition Consumes(Resource resource, ConsumeMode mode) => this;
-        public ITargetDefinition RequiresNetwork() => this;
-        public ITargetDefinition RequiresDocker() => this;
-        public ITargetDefinition RequiresAdmin() => this;
-        public ITargetDefinition Capability(CapabilityTier tier) => this;
-        public ITargetDefinition RequiresTool(string toolName, string? minVersion = null) => this;
-        public ITargetDefinition Timeout(TimeSpan timeout) => this;
-        public ITargetDefinition ExpectedDuration(TimeSpan expected) => this;
-        public ITargetDefinition MemoryBudget(int megabytes) => this;
-        public ITargetDefinition MemoryHardLimit(int megabytes) => this;
-        public ITargetDefinition MaxParallelism(int copies) => this;
-        public ITargetDefinition MaxHostParallelism(int copies) => this;
-        public ITargetDefinition Idempotent() => this;
-        public ITargetDefinition InputHash(Func<string> hashProducer) => this;
-        public ITargetDefinition Produces(string globPattern) => this;
-        public ITargetDefinition RunMode(RunMode mode) => this;
-        public ITargetDefinition FailureMode(FailureMode mode) => this;
-        public ITargetDefinition Retry(int count, Backoff backoff, params int[] retryableExitCodes) => this;
-    }
+    // RecordingDef lives in RecordingDef.cs so the gate tests (#151) can use the same fake.
 
     // ============================================================
     // Property / default coverage
@@ -300,7 +228,7 @@ public sealed class SecurityPipelineBuildTests : IDisposable
     public void Every_Target_Has_A_Description()
     {
         var b = new DefaultBuild();
-        foreach (var t in new[] { b.T_Sbom, b.T_OpenGrep, b.T_Roslyn, b.T_Scan, b.T_Cve, b.T_Trivy, b.T_Push, b.T_Metrics, b.T_Security })
+        foreach (var t in new[] { b.T_Sbom, b.T_OpenGrep, b.T_Roslyn, b.T_Scan, b.T_Cve, b.T_Trivy, b.T_Collect, b.T_Push, b.T_Metrics, b.T_Gate, b.T_Security })
             Assert.False(string.IsNullOrWhiteSpace(Materialize(t).RecordedDescription));
     }
 
@@ -320,21 +248,61 @@ public sealed class SecurityPipelineBuildTests : IDisposable
     public void SecurityScanCveSbom_Depends_On_Sbom()
         => Assert.Equal(["Sbom"], Materialize(new DefaultBuild().T_Cve).RecordedDependencies);
 
-    [Fact]
-    public void SecurityPush_Depends_On_All_Producers()
-        => Assert.Equal(["Sbom", "SecurityScan", "SecurityScanCveSbom", "SecurityScanTrivy"],
-            Materialize(new DefaultBuild().T_Push).RecordedDependencies);
+    // ---- #151: collect -> publish -> enforce, as three ordered stages -------------------
+    //
+    // The wiring IS the fix, so it is asserted rather than left implicit. Enforcing by failing a
+    // scan target would skip SecurityPush and SecurityMetrics in exactly the runs where findings
+    // exist, so evidence would arrive reliably only when there was nothing to report.
 
     [Fact]
-    public void SecurityMetrics_Depends_On_The_Five_Producers()
-        => Assert.Equal(["Sbom", "SecurityScanOpenGrep", "SecurityScanRoslyn", "SecurityScanCveSbom", "SecurityScanTrivy"],
-            Materialize(new DefaultBuild().T_Metrics).RecordedDependencies);
+    public void The_Collect_Stage_Depends_On_Every_Producer()
+        => Assert.Equal(["Sbom", "SecurityScan", "SecurityScanCveSbom", "SecurityScanTrivy"],
+            Materialize(new DefaultBuild().T_Collect).RecordedDependencies);
+
+    [Fact]
+    public void Both_Publish_Targets_Depend_Only_On_The_Collect_Stage()
+    {
+        // One edge each, to the stage — not to the individual scanners. That is what lets the
+        // publish stage be reached when one scanner failed.
+        Assert.Equal(["SecurityCollect"], Materialize(new DefaultBuild().T_Push).RecordedDependencies);
+        Assert.Equal(["SecurityCollect"], Materialize(new DefaultBuild().T_Metrics).RecordedDependencies);
+    }
+
+    [Fact]
+    public void The_Gate_Runs_After_Both_Publish_Targets()
+        => Assert.Equal(["SecurityMetrics", "SecurityPush"],
+            Materialize(new DefaultBuild().T_Gate).RecordedDependencies);
 
     [Fact]
     public void Security_Aggregate_Depends_On_The_Whole_Chain()
         => Assert.Equal(
-            ["Sbom", "SecurityScan", "SecurityScanCveSbom", "SecurityScanTrivy", "SecurityMetrics", "SecurityPush"],
+            ["SecurityCollect", "SecurityMetrics", "SecurityPush", "SecurityGate"],
             Materialize(new DefaultBuild().T_Security).RecordedDependencies);
+
+    [Fact]
+    public void Collect_Publish_And_Enforce_Are_All_Assured_After_Failure()
+    {
+        // Without this, a single scanner crash suppresses every downstream target: no metrics, no
+        // push, no receipt — precisely in the run where something went wrong.
+        var build = new DefaultBuild();
+        foreach (var (name, target) in new (string, Tamp.Target)[]
+        {
+            ("Sbom", build.T_Sbom),
+            ("SecurityScanOpenGrep", build.T_OpenGrep),
+            ("SecurityScanRoslyn", build.T_Roslyn),
+            ("SecurityScan", build.T_Scan),
+            ("SecurityScanCveSbom", build.T_Cve),
+            ("SecurityScanTrivy", build.T_Trivy),
+            ("SecurityCollect", build.T_Collect),
+            ("SecurityMetrics", build.T_Metrics),
+            ("SecurityPush", build.T_Push),
+            ("SecurityGate", build.T_Gate),
+        })
+        {
+            Assert.True(Materialize(target).RecordedAssuredAfterFailure,
+                $"{name} must be assured-after-failure so evidence survives an upstream failure");
+        }
+    }
 
     // ============================================================
     // Runnable .Executes bodies (plan builders / file IO / env-gated skips)

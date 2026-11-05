@@ -132,6 +132,10 @@ public abstract class SecurityPipelineBuild : TampBuild
     protected virtual Target Sbom => _ => _
         .Description($"Generate a CycloneDX SBOM (spec {SecurityCycloneDxSpecVersion}) into {nameof(SecuritySbomFile)}.")
         .DependsOn(SbomDependencies)
+        // #151 collect stage: assured so one scanner's failure cannot suppress the others'
+        // evidence, nor the publish stage downstream. The target still reports failed and the
+        // build still fails — what changes is that the remaining evidence is produced anyway.
+        .AssuredAfterFailure()
         .Executes(() =>
         {
             SecurityArtifactsDir.CreateDirectory();
@@ -149,6 +153,10 @@ public abstract class SecurityPipelineBuild : TampBuild
 
     protected virtual Target SecurityScanOpenGrep => _ => _
         .Description("Pattern-based SAST via OpenGrep.")
+        // #151 collect stage: assured so one scanner's failure cannot suppress the others'
+        // evidence, nor the publish stage downstream. The target still reports failed and the
+        // build still fails — what changes is that the remaining evidence is produced anyway.
+        .AssuredAfterFailure()
         .Executes(() =>
         {
             SecurityArtifactsDir.CreateDirectory();
@@ -166,6 +174,10 @@ public abstract class SecurityPipelineBuild : TampBuild
     protected virtual Target SecurityScanRoslyn => _ => _
         .Description("Semantic SAST via SonarAnalyzer + Roslynator + NetAnalyzers, captured to per-(project,TFM) SARIFs via MSBuild /p:ErrorLog. Requires Directory.Build.props in the adopter repo to conditionally include the analyzer PackageReferences when IncludeSecurityAnalyzers=true (see Tamp's own Directory.Build.props for the canonical wiring).")
         .DependsOn(SbomDependencies)
+        // #151 collect stage: assured so one scanner's failure cannot suppress the others'
+        // evidence, nor the publish stage downstream. The target still reports failed and the
+        // build still fails — what changes is that the remaining evidence is produced anyway.
+        .AssuredAfterFailure()
         .Executes(() =>
         {
             SecurityArtifactsDir.CreateDirectory();
@@ -182,6 +194,10 @@ public abstract class SecurityPipelineBuild : TampBuild
     protected virtual Target SecurityScan => _ => _
         .Description($"Combine OpenGrep SARIF + per-(project, TFM) Roslyn SARIFs into {nameof(SecuritySarifSastFile)} via SarifMerge.CombineDistinct.")
         .DependsOn(nameof(SecurityScanOpenGrep), nameof(SecurityScanRoslyn))
+        // #151 collect stage: assured so one scanner's failure cannot suppress the others'
+        // evidence, nor the publish stage downstream. The target still reports failed and the
+        // build still fails — what changes is that the remaining evidence is produced anyway.
+        .AssuredAfterFailure()
         .Executes(() =>
         {
             var logs = new List<SarifLog>();
@@ -209,6 +225,10 @@ public abstract class SecurityPipelineBuild : TampBuild
     protected virtual Target SecurityScanCveSbom => _ => _
         .Description($"Cross-ecosystem SCA: osv-scanner against {nameof(SecuritySbomFile)} → {nameof(SecuritySarifCveFile)}.")
         .DependsOn(nameof(Sbom))
+        // #151 collect stage: assured so one scanner's failure cannot suppress the others'
+        // evidence, nor the publish stage downstream. The target still reports failed and the
+        // build still fails — what changes is that the remaining evidence is produced anyway.
+        .AssuredAfterFailure()
         .Executes(() =>
         {
             SecurityArtifactsDir.CreateDirectory();
@@ -222,6 +242,10 @@ public abstract class SecurityPipelineBuild : TampBuild
 
     protected virtual Target SecurityScanTrivy => _ => _
         .Description($"Trivy fs scan: secrets + IaC misconfig → {nameof(SecuritySarifTrivyFile)}. Vuln scanner deliberately OFF — osv-scanner is the canonical SCA path.")
+        // #151 collect stage: assured so one scanner's failure cannot suppress the others'
+        // evidence, nor the publish stage downstream. The target still reports failed and the
+        // build still fails — what changes is that the remaining evidence is produced anyway.
+        .AssuredAfterFailure()
         .Executes(() =>
         {
             SecurityArtifactsDir.CreateDirectory();
@@ -240,10 +264,15 @@ public abstract class SecurityPipelineBuild : TampBuild
 
     protected virtual Target SecurityPush => _ => _
         .Description("Push SBOM to Dependency-Track + merged SAST + CVE + Trivy SARIF + DT FPF to DefectDojo. Both legs are env-var-gated and no-op cleanly when unset.")
-        .DependsOn(nameof(Sbom), nameof(SecurityScan), nameof(SecurityScanCveSbom), nameof(SecurityScanTrivy))
+        .DependsOn(nameof(SecurityCollect))
+        // #151 publish stage: assured, so evidence is published even when a scanner failed or a
+        // policy gate is about to fail the build. Publication must never be contingent on the
+        // content of the findings, or evidence arrives reliably only when there is nothing to report.
+        .AssuredAfterFailure()
         .Executes(async () =>
         {
             string? exportedFpf = null;
+            _securityPublications.Clear();
 
             if (!string.IsNullOrEmpty(SecurityDtUrl) && SecurityDtApiKey is not null && !string.IsNullOrEmpty(SecurityDtProjectUuid))
             {
@@ -256,17 +285,40 @@ public abstract class SecurityPipelineBuild : TampBuild
                 var settled = await dt.WaitForAnalysisCompleteAsync(upload.Token, dtSettings.DefaultAnalysisTimeout, Backoff.Constant(TimeSpan.FromSeconds(3)));
                 if (!settled)
                 {
-                    Console.WriteLine("[security] DT analysis didn't settle within budget; skipping findings export.");
+                    // #151: this used to log and continue, so an unsettled analysis and a completed
+                    // one both produced a green SecurityPush. The upload may have landed and the
+                    // analysis may still finish later, so this is Incomplete rather than Failed —
+                    // but it is not success, and the gate sees it.
+                    Console.WriteLine("[security] DT analysis didn't settle within budget; no findings export. Recorded as an incomplete publication.");
+                    RecordSecurityPublication(new SecurityPublicationReport
+                    {
+                        Sink = "dependency-track",
+                        Status = SecurityPublicationStatus.Incomplete,
+                        Detail = $"SBOM uploaded (token {upload.Token}) but analysis did not settle within "
+                               + $"{dtSettings.DefaultAnalysisTimeout.TotalSeconds:0}s, so findings were not exported",
+                    });
                 }
                 else
                 {
                     exportedFpf = await dt.ExportFindingsAsync(Guid.Parse(SecurityDtProjectUuid));
                     Console.WriteLine($"[security] DT findings exported ({exportedFpf.Length} bytes of FPF JSON).");
+                    RecordSecurityPublication(new SecurityPublicationReport
+                    {
+                        Sink = "dependency-track",
+                        Status = SecurityPublicationStatus.Completed,
+                        Detail = $"SBOM uploaded and analysis settled; {exportedFpf.Length} bytes of FPF exported",
+                    });
                 }
             }
             else
             {
                 Console.WriteLine("[security] TAMP_DT_URL / TAMP_DT_API_KEY / TAMP_DT_PROJECT_UUID not all set — skipping Dependency-Track push.");
+                RecordSecurityPublication(new SecurityPublicationReport
+                {
+                    Sink = "dependency-track",
+                    Status = SecurityPublicationStatus.NotConfigured,
+                    Detail = "TAMP_DT_URL / TAMP_DT_API_KEY / TAMP_DT_PROJECT_UUID not all set",
+                });
             }
 
             if (!string.IsNullOrEmpty(SecurityDdUrl) && SecurityDdToken is not null && SecurityDdEngagementId is { } engagementId)
@@ -274,6 +326,7 @@ public abstract class SecurityPipelineBuild : TampBuild
                 Console.WriteLine($"[security] Pushing findings to DefectDojo at {SecurityDdUrl} (engagement {engagementId})…");
                 var ddSettings = new DefectDojoSettings { BaseUrl = new Uri(SecurityDdUrl), Token = SecurityDdToken };
                 using var dd = new DefectDojoClient(ddSettings);
+                var imported = 0;
 
                 var sastOptions = new DefectDojoImportOptions
                 {
@@ -290,28 +343,48 @@ public abstract class SecurityPipelineBuild : TampBuild
                     var log = SarifReader.LoadFromFile(SecuritySarifSastFile);
                     var r = await dd.ReimportSarifAsync(engagementId, log, sastOptions);
                     Console.WriteLine($"[security] DD SAST SARIF reimport → test {r.TestId}");
+                    imported++;
                 }
                 if (File.Exists(SecuritySarifCveFile))
                 {
                     var log = SarifReader.LoadFromFile(SecuritySarifCveFile);
                     var r = await dd.ReimportSarifAsync(engagementId, log, cveOptions);
                     Console.WriteLine($"[security] DD CVE SARIF reimport → test {r.TestId}");
+                    imported++;
                 }
                 if (File.Exists(SecuritySarifTrivyFile))
                 {
                     var log = SarifReader.LoadFromFile(SecuritySarifTrivyFile);
                     var r = await dd.ReimportSarifAsync(engagementId, log, trivyOptions);
                     Console.WriteLine($"[security] DD Trivy SARIF reimport → test {r.TestId}");
+                    imported++;
                 }
                 if (exportedFpf is not null)
                 {
                     var r = await dd.ReimportScanAsync(DefectDojoScanType.DependencyTrackFpf, engagementId, exportedFpf, fpfOptions);
                     Console.WriteLine($"[security] DD FPF reimport → test {r.TestId}");
+                    imported++;
                 }
+
+                // Imported is not the same as ingested: DefectDojo's dedupe and the consumer's own
+                // processing are asynchronous. This records that the import call returned, which is
+                // the strongest claim this build can honestly make.
+                RecordSecurityPublication(new SecurityPublicationReport
+                {
+                    Sink = "defectdojo",
+                    Status = SecurityPublicationStatus.Completed,
+                    Detail = $"{imported} report(s) reimported into engagement {engagementId}",
+                });
             }
             else
             {
                 Console.WriteLine("[security] TAMP_DD_URL / TAMP_DD_TOKEN / TAMP_DD_ENGAGEMENT_ID not all set — skipping DefectDojo push.");
+                RecordSecurityPublication(new SecurityPublicationReport
+                {
+                    Sink = "defectdojo",
+                    Status = SecurityPublicationStatus.NotConfigured,
+                    Detail = "TAMP_DD_URL / TAMP_DD_TOKEN / TAMP_DD_ENGAGEMENT_ID not all set",
+                });
             }
         });
 
@@ -330,28 +403,65 @@ public abstract class SecurityPipelineBuild : TampBuild
     /// </remarks>
     protected virtual Target SecurityMetrics => _ => _
         .Description("Emit tamp.security.sbom.components_count + tamp.security.scan.findings_count OTel metrics from the produced SBOM + SARIF files.")
-        .DependsOn(nameof(Sbom), nameof(SecurityScanOpenGrep), nameof(SecurityScanRoslyn), nameof(SecurityScanCveSbom), nameof(SecurityScanTrivy))
+        .DependsOn(nameof(SecurityCollect))
+        // #151 publish stage: see SecurityPush.
+        .AssuredAfterFailure()
         .Executes(() =>
         {
-            // SBOM → components_count tagged by (producer, type).
-            SecurityPipelineMetrics.EmitComponentsFromBom(SecuritySbomFile, SecurityMetricsProducerTagForSbom);
+            // Read the whole expected set, then emit. Reading through SecurityPipelineMetrics'
+            // readers is what makes an absent scan emit status="not_run" instead of emitting
+            // nothing at all, which is indistinguishable from a clean scan.
+            var evidence = ReadSecurityEvidence();
 
-            // Per-scanner SARIF → findings_count tagged by (tool, severity).
-            SecurityPipelineMetrics.EmitFindingsFromSarif(SecuritySarifOpenGrepFile, "opengrep");
-            SecurityPipelineMetrics.EmitFindingsFromSarif(SecuritySarifCveFile, "osvscanner");
-            SecurityPipelineMetrics.EmitFindingsFromSarif(SecuritySarifTrivyFile, "trivy");
+            if (evidence.Sbom is { } sbom) SecurityPipelineMetrics.Emit(sbom);
+            foreach (var scan in evidence.Scans) SecurityPipelineMetrics.Emit(scan);
 
-            // Roslyn ships per-(project, TFM) SARIFs in the dir. Emit one batched count per file —
-            // the (project, TFM) detail is intentionally NOT a metric tag (high-cardinality cost);
-            // every roslyn SARIF in the dir aggregates under tool="roslyn".
-            if (SecuritySarifRoslynDir.DirectoryExists())
-            {
-                foreach (var sarif in SecuritySarifRoslynDir.GlobFiles("*.sarif"))
-                {
-                    SecurityPipelineMetrics.EmitFindingsFromSarif(sarif, SecurityMetricsToolTagForRoslynSarif);
-                }
-            }
+            Console.WriteLine("[security] evidence:");
+            Console.WriteLine(evidence.ToString());
         });
+
+    /// <summary>
+    /// The scan outputs this pipeline expects to exist, and the tool tag each is reported under.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This list is what turns "did this scan run?" into an answerable question. A scanner that was
+    /// never wired and a scanner that crashed are otherwise both simply absent, and no consumer can
+    /// tell them apart.
+    /// </para>
+    /// <para>
+    /// <b>An adopter who deliberately drops a scanner should remove it here</b> — that is an explicit
+    /// statement that the surface is not covered, rather than a silent gap that the gate will report
+    /// as missing evidence. Likewise, an adopter who adds a scanner should add it, or its findings
+    /// will never reach the metrics or the gate.
+    /// </para>
+    /// <para>
+    /// The merged <c>sast.sarif</c> is deliberately absent: it is derived from the OpenGrep and
+    /// Roslyn outputs, which are both here, and counting it too would double every SAST finding.
+    /// </para>
+    /// </remarks>
+    protected virtual IReadOnlyList<SecurityScanSource> SecurityExpectedScans =>
+    [
+        new("opengrep", SecuritySarifOpenGrepFile),
+        new(SecurityMetricsToolTagForRoslynSarif, SecuritySarifRoslynDir, IsDirectory: true),
+        new("osvscanner", SecuritySarifCveFile),
+        new("trivy", SecuritySarifTrivyFile),
+    ];
+
+    /// <summary>
+    /// Read every expected scan plus the SBOM, and fold in the publication outcomes recorded by
+    /// <see cref="SecurityPush"/>. Pure: no metrics are emitted and nothing is written.
+    /// </summary>
+    /// <remarks>
+    /// Both the metrics target and the gate call this. It re-reads rather than caching, so the gate's
+    /// verdict never depends on whether the metrics target happened to run first.
+    /// </remarks>
+    protected SecurityEvidenceSummary ReadSecurityEvidence() => new()
+    {
+        Sbom = SecurityPipelineMetrics.ReadBom(SecuritySbomFile, SecurityMetricsProducerTagForSbom),
+        Scans = [.. SecurityExpectedScans.Select(source => SecurityPipelineMetrics.ReadScan(source))],
+        Publications = _securityPublications,
+    };
 
     /// <summary>Tool tag emitted for each Roslyn per-(project,TFM) SARIF. Default <c>"roslyn"</c>.</summary>
     protected virtual string SecurityMetricsToolTagForRoslynSarif => "roslyn";
@@ -359,7 +469,164 @@ public abstract class SecurityPipelineBuild : TampBuild
     /// <summary>Producer tag emitted for the SBOM. Default <c>"cyclonedx"</c> (matches the dotnet-CycloneDX path). Override to <c>"syft"</c> when <see cref="Sbom"/> has been swapped to Syft.</summary>
     protected virtual string SecurityMetricsProducerTagForSbom => "cyclonedx";
 
+    /// <summary>
+    /// The collect stage, as a named target: every scanner has run and written whatever it produced.
+    /// Depending on this rather than on the individual scanners is what lets the publish stage be a
+    /// single edge in the graph.
+    /// </summary>
+    protected virtual Target SecurityCollect => _ => _
+        .Description("Collect stage: run every scanner and the SBOM generator to completion. Produces evidence; enforces nothing.")
+        .DependsOn(nameof(Sbom), nameof(SecurityScan), nameof(SecurityScanCveSbom), nameof(SecurityScanTrivy))
+        // Assured for the same reason as its dependencies: the stage completes so the publish stage
+        // downstream is reached even when a scanner failed.
+        .AssuredAfterFailure()
+        .Executes(() => { });
+
+    /// <summary>
+    /// The enforcement stage: read the collected evidence, write the receipt, and apply policy. Runs
+    /// <b>after</b> publication, so failing it costs no evidence.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two separate things happen here, and only the first is built in.
+    /// </para>
+    /// <para>
+    /// <b>Evidence integrity</b> — when <see cref="SecurityRequireReliableEvidence"/> is set (the
+    /// default), the gate fails if any expected scan did not run or could not be parsed, if the SBOM
+    /// is absent, unreadable or empty, or if a publication was attempted and did not land. This is
+    /// not a severity policy: it is the refusal to treat an unknown outcome as a good one, which is
+    /// the failure direction a security control must never take.
+    /// </para>
+    /// <para>
+    /// <b>Policy</b> — thresholds belong to the adopter, so there are none here. Override
+    /// <see cref="EnforceSecurityPolicy"/> and throw to fail the build on whatever the policy is. The
+    /// summary handed to it carries per-scanner counts and <see cref="SecurityEvidenceSummary.FindingsAtOrAbove"/>.
+    /// </para>
+    /// </remarks>
+    protected virtual Target SecurityGate => _ => _
+        .Description($"Enforce stage: read the collected evidence, write {nameof(SecurityReceiptFile)}, fail on unreliable evidence, then apply the adopter's policy via EnforceSecurityPolicy.")
+        .DependsOn(nameof(SecurityMetrics), nameof(SecurityPush))
+        // Assured so the receipt is written and the verdict reported even when a scanner failed
+        // upstream — the run where the evidence matters most is the run where something went wrong.
+        .AssuredAfterFailure()
+        .Executes(() =>
+        {
+            var evidence = ReadSecurityEvidence();
+
+            SecurityArtifactsDir.CreateDirectory();
+            File.WriteAllText(SecurityReceiptFile.Value, evidence.ToJson());
+            Console.WriteLine($"[security] receipt → {SecurityReceiptFile.Value}");
+            Console.WriteLine(evidence.ToString());
+
+            var problems = evidence.ReliabilityProblems;
+            if (problems.Count > 0)
+            {
+                Console.WriteLine($"[security] {problems.Count} reliability problem(s):");
+                foreach (var problem in problems) Console.WriteLine($"  - {problem}");
+
+                if (SecurityRequireReliableEvidence)
+                    throw new InvalidOperationException(
+                        $"Security evidence is incomplete, so this build has no information about {problems.Count} "
+                        + "thing(s) it is supposed to check — which is not the same as having good news. "
+                        + $"See {SecurityReceiptFile.Value}. Problems: {string.Join("; ", problems)}. "
+                        + $"Set {nameof(SecurityRequireReliableEvidence)} to false to downgrade this to a warning, "
+                        + $"or drop the scanner from {nameof(SecurityExpectedScans)} if it is deliberately not run.");
+
+                Console.WriteLine($"[security] {nameof(SecurityRequireReliableEvidence)} is false — continuing with incomplete evidence.");
+            }
+            else
+            {
+                Console.WriteLine($"[security] evidence is complete: {evidence.Scans.Count} scan(s) ran, {evidence.TotalFindings} finding(s) total.");
+            }
+
+            EnforceSecurityPolicy(evidence);
+        });
+
+    /// <summary>
+    /// The policy seam. Default implementation does nothing: a severity threshold is the adopter's
+    /// decision, not core's.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Throw to fail the build. Because this runs in the enforce stage — after
+    /// <see cref="SecurityMetrics"/> and <see cref="SecurityPush"/>, both of which are assured —
+    /// failing here costs no evidence: the SBOM is pushed, the SARIFs are uploaded, the metrics are
+    /// emitted and the receipt is written before this is called.
+    /// </para>
+    /// <para>
+    /// That ordering is the point. Enforcing by failing a scan target instead would skip publication
+    /// in exactly the runs where findings exist, so evidence would arrive reliably only when there
+    /// was nothing to report.
+    /// </para>
+    /// <example>
+    /// <code>
+    /// protected override void EnforceSecurityPolicy(SecurityEvidenceSummary evidence)
+    /// {
+    ///     var blocking = evidence.FindingsAtOrAbove("error");
+    ///     if (blocking > 0)
+    ///         throw new InvalidOperationException($"{blocking} error-level finding(s) exceed policy.");
+    /// }
+    /// </code>
+    /// </example>
+    /// </remarks>
+    /// <param name="evidence">Everything the collect and publish stages produced.</param>
+    protected virtual void EnforceSecurityPolicy(SecurityEvidenceSummary evidence) { }
+
+    /// <summary>
+    /// Fail <see cref="SecurityGate"/> when the evidence cannot be relied on — an expected scan that
+    /// did not run, an unreadable output, an absent or empty SBOM, or a publication that did not
+    /// land. Default <see langword="true"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the one behavioural change in #151 that can fail a build that used to pass.</b> A
+    /// scanner that is not installed previously produced a skipped target, zero findings and a green
+    /// build; it now fails the gate, because a pipeline that silently does not scan a surface is the
+    /// bug being fixed.
+    /// </para>
+    /// <para>
+    /// Two honest ways to go green again: install the scanner, or remove it from
+    /// <see cref="SecurityExpectedScans"/> to state that the surface is deliberately not covered.
+    /// Setting this to <see langword="false"/> is the third, and it keeps the receipt and the
+    /// <c>status</c> metrics, so the gap stays visible even though it no longer blocks.
+    /// </para>
+    /// </remarks>
+    protected virtual bool SecurityRequireReliableEvidence => true;
+
+    /// <summary>
+    /// Where <see cref="SecurityGate"/> writes the evidence receipt. Default
+    /// <c>{SecurityArtifactsDir}/security-receipt.json</c>.
+    /// </summary>
+    /// <remarks>
+    /// A positive artifact recording what ran, what each scanner found, and what could not be
+    /// believed. Publish it: a green publishing job is weak evidence that a consumer accepted
+    /// anything, because most report ingestion is asynchronous. The receipt is what gives a missing
+    /// report a single meaning.
+    /// </remarks>
+    protected virtual AbsolutePath SecurityReceiptFile => SecurityArtifactsDir / "security-receipt.json";
+
+    /// <summary>Publication outcomes recorded by <see cref="SecurityPush"/> for the gate to read.</summary>
+    private readonly List<SecurityPublicationReport> _securityPublications = [];
+
+    /// <summary>Record one publication leg's outcome. Called by <see cref="SecurityPush"/>.</summary>
+    protected void RecordSecurityPublication(SecurityPublicationReport report)
+    {
+        if (report is null) throw new ArgumentNullException(nameof(report));
+        Console.WriteLine($"[security] publication — {report}");
+        _securityPublications.Add(report);
+    }
+
+    /// <summary>
+    /// End-to-end security chain, in three ordered stages: <b>collect</b> (every scanner runs),
+    /// <b>publish</b> (evidence and metrics go out unconditionally), <b>enforce</b> (the gate reads
+    /// the evidence and applies policy).
+    /// </summary>
+    /// <remarks>
+    /// The ordering is the contract. Publication never depends on what the findings say, so evidence
+    /// arrives on the runs that matter; enforcement happens last, so failing the build costs nothing
+    /// that was already published.
+    /// </remarks>
     protected virtual Target Security => _ => _
-        .Description("End-to-end security chain: Sbom + SAST merge + SCA (osv) + Trivy secrets/misconfig + metrics emission + (env-gated) DT/DD push.")
-        .DependsOn(nameof(Sbom), nameof(SecurityScan), nameof(SecurityScanCveSbom), nameof(SecurityScanTrivy), nameof(SecurityMetrics), nameof(SecurityPush));
+        .Description("End-to-end security chain in three stages: collect (scanners + SBOM) → publish (metrics + env-gated DT/DD push, unconditional) → enforce (gate reads the evidence and applies policy).")
+        .DependsOn(nameof(SecurityCollect), nameof(SecurityMetrics), nameof(SecurityPush), nameof(SecurityGate));
 }

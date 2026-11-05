@@ -76,6 +76,105 @@ Every inherited target is `virtual` — override `Sbom`,
 `SecurityScanTrivy`, etc. when defaults don't fit your repo layout
 (e.g. non-.NET adopters swap `Sbom` to use `Tamp.Syft.V1`).
 
+## Three stages: collect, publish, enforce
+
+`tamp Security` runs three ordered stages, and the ordering is the contract.
+
+```
+SecurityCollect   Sbom + SecurityScan(OpenGrep, Roslyn) + SecurityScanCveSbom + SecurityScanTrivy
+      |           every scanner runs; nothing is enforced
+      v
+SecurityMetrics   metrics emitted          }  publish stage, unconditional:
+SecurityPush      SBOM + SARIF pushed      }  never contingent on what the findings say
+      |
+      v
+SecurityGate      read the evidence, write the receipt, fail on policy
+```
+
+**Why publication comes before enforcement.** The obvious way to enforce a policy is to fail a scan
+target when findings exceed a threshold. Do that and both publishing targets are skipped, so the SBOM
+is not pushed, the SARIF is not uploaded and no metrics are emitted — **precisely in the runs where
+findings exist.** Evidence then arrives reliably when there is nothing to report and unreliably when
+there is. Every stage from `SecurityCollect` onward is declared `AssuredAfterFailure()`, so failing
+the gate costs no evidence, and one scanner crashing does not suppress the others' output.
+
+### Three outcomes per scanner, not two
+
+| State | Meaning | How it is reported |
+| --- | --- | --- |
+| **Completed clean** | the scanner ran and found nothing — a positive result | `status{status="completed"}`, no findings points, `IsClean` true |
+| **Completed with findings** | the scanner ran and found something; policy decides whether that blocks | `status{status="completed"}` plus `findings_count` points |
+| **Not run / unreadable** | no reliable result exists | `status{status="not_run"}` or `"unreadable"`, **no** findings points |
+
+Before this, a missing SARIF emitted nothing at all and `findings_count` reported the same
+observation — zero — for "this scanner ran and found nothing" and "this scanner never ran". The absent
+case is the one that should raise an alarm, so it is now the one that is loudest.
+
+`tamp.security.scan.status` and `tamp.security.sbom.status` are what carry it. **Alert on
+`status="not_run"`**: `findings_count` alone cannot distinguish a clean build from an absent scan,
+because a clean scan emits no findings point either.
+
+### Writing a policy
+
+Thresholds belong to the adopter, so there are none built in. Override `EnforceSecurityPolicy` and
+throw:
+
+```csharp
+protected override void EnforceSecurityPolicy(SecurityEvidenceSummary evidence)
+{
+    var blocking = evidence.FindingsAtOrAbove("error");
+    if (blocking > 0)
+        throw new InvalidOperationException($"{blocking} error-level finding(s) exceed policy.");
+}
+```
+
+It runs in `SecurityGate`, after both publishing targets, so throwing here loses nothing that was
+already published. `evidence` carries per-scanner counts, the SBOM, the publication outcomes and
+`ReliabilityProblems`.
+
+### Evidence integrity is enforced; severity is not
+
+`SecurityGate` fails by default when the evidence cannot be relied on — an expected scan that did not
+run, an unreadable output, an absent or empty SBOM, or a publication that was attempted and did not
+land. That is not a severity policy; it is the refusal to treat an unknown outcome as a good one.
+
+> **This is the one change that can fail a build that used to pass.** A scanner that is not installed
+> previously produced a skipped target, zero findings and a green build. There are three ways to go
+> green again, and the first two are the honest ones:
+>
+> 1. install the scanner;
+> 2. remove it from `SecurityExpectedScans`, which states that the surface is deliberately not
+>    covered;
+> 3. set `SecurityRequireReliableEvidence` to `false`, which keeps the receipt and the `status`
+>    metrics so the gap stays visible even though it no longer blocks.
+
+An empty SBOM counts as unreliable for a reason worth stating: every SCA result derived from a
+component-less SBOM is *vacuously* clean, which is the most convincing kind of false negative.
+
+### The receipt
+
+`SecurityGate` writes `artifacts/security/security-receipt.json` — what ran, what each scanner found,
+and what could not be believed. It is written **before** the gate throws, because the run where
+evidence matters most is the run where something went wrong.
+
+```json
+{
+  "schema": "tamp.security.receipt/1",
+  "scans": [
+    { "tool": "opengrep", "status": "completed", "findings": 3, "reliable": true },
+    { "tool": "trivy",    "status": "not_run",   "findings": null, "reliable": false,
+      "detail": "no SARIF at this path: the scan was skipped, or the tool died before writing" }
+  ],
+  "reliable": false,
+  "reliabilityProblems": ["trivy: not_run — no SARIF at this path: …"]
+}
+```
+
+`findings` is `null`, not `0`, for a scan with no result — a reader cannot mistake "no result" for
+"found nothing". Publish the receipt: a green publishing job is weak evidence that a consumer accepted
+anything, because most report ingestion is asynchronous. The receipt is what gives a *missing* report
+a single meaning.
+
 ## End-to-end recipe (manual wiring)
 
 This is the canonical flow the meta-package implements. Use this if
