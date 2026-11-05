@@ -8,6 +8,8 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-11-05 - Security staging, SARIF dedup identity, and release notes that reach people
+
 ### Added
 - **Corroboration between two tools is recorded instead of discarded** ([#156](https://github.com/tamp-build/tamp/issues/156)). `SarifDedup.Distinct` collapses duplicates *across* runs, so a finding two tools both reported was kept on whichever run came first in input order and the other tool's run showed nothing for it — with no record that it concurred. Agreement between two independent scanners is a signal, and a finding both tools see is worth triaging differently from one only one tool sees.
 
