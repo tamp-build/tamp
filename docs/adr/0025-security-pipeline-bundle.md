@@ -51,3 +51,36 @@ Every target is `virtual` (scan directories, SBOM spec version, test-project exc
 ## Notes
 
 The bundle is a *composition* over existing single-tool wrappers, not a new scanner — each step remains an independently versioned satellite. It pairs naturally with `Tamp.Ingest.V1` (push the produced SBOM/SARIF to a `tamp-ingest-v1` sink) and with [ADR 0020](0020-tamp-components.md)'s uniform-topology goal. The metrics surface (`SecurityPipelineMetrics`) is out of scope for this ADR.
+
+## 2026-11-05 amendment: collect, publish, enforce (#151)
+
+The bundle shipped with no enforcement stage, and its dependency graph made the natural way to add one
+destroy the evidence: both publishing targets depended on the scan targets, so failing a scan on
+findings skipped the SBOM push, the SARIF upload and the metrics — in exactly the runs where findings
+existed.
+
+Separately, `EmitFindingsFromSarif` and `EmitComponentsFromBom` returned `0` for a missing file, so
+`tamp.security.scan.findings_count` reported the same value for "this scanner ran and found nothing"
+and "this scanner never ran", and an unsettled Dependency-Track analysis reported as a successful
+push. In all three places an **unknown** outcome was reported as a **good** outcome.
+
+**Decision.** Three ordered stages, every one of them `AssuredAfterFailure()`:
+
+1. **Collect** — scanners run to completion, independent of each other.
+2. **Publish** — metrics and evidence go out unconditionally. Nothing about the content of the
+   findings may influence whether they are published.
+3. **Enforce** — `SecurityGate` reads the collected evidence, writes a receipt, fails on unreliable
+   evidence, then calls the adopter's `EnforceSecurityPolicy`.
+
+Evidence now carries its own reliability (`SecurityEvidenceStatus`: `NotRun` / `Unreadable` /
+`Completed`) rather than having it inferred from a count, and `tamp.security.scan.status` /
+`tamp.security.sbom.status` make an absent scan visible in the metrics instead of absent from them.
+
+**Policy stays out of core.** The gate enforces evidence *integrity* — a scan that did not run, an
+unreadable output, an empty SBOM, a publication that did not land — and holds no severity threshold.
+Thresholds are the adopter's, expressed by overriding `EnforceSecurityPolicy`.
+
+**Consequence.** A scanner that is not installed now fails `SecurityGate` where it used to produce a
+green build with zero findings. That is the bug being fixed rather than a regression, and it is
+opt-out-able three ways: install the scanner, drop it from `SecurityExpectedScans`, or set
+`SecurityRequireReliableEvidence` to `false`.
