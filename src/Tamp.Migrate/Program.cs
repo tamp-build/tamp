@@ -13,8 +13,11 @@ namespace Tamp.Migrate;
 /// </summary>
 internal static class Program
 {
-    private const int ExitUsage = 2;
-    private const int ExitDirtyTree = 3;
+    /// <summary>Bad arguments, no build directory. Also <c>Tamp.Cli</c>'s MigrateForwarder.MigrateOwnExitCodes.</summary>
+    internal const int ExitUsage = 2;
+
+    /// <summary>The working tree has uncommitted work. Also <c>Tamp.Cli</c>'s MigrateForwarder.MigrateOwnExitCodes.</summary>
+    internal const int ExitDirtyTree = 3;
 
     public static int Main(string[] args)
     {

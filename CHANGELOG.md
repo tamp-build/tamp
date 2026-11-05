@@ -8,8 +8,9 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
-### Added
+## [1.19.0] — 2026-11-04 — `tamp migrate nuke` (preview); PATH, regex and reliability hardening
 
+### Added
 - **`tamp migrate nuke`, preview.** `Tamp.Migrate` is now packable, and `tamp migrate …` runs it at the CLI's own version through `dotnet tool execute` (.NET 10 SDK; on older SDKs, install it with `dotnet tool install -g Tamp.Migrate`). Beyond the C# rewrite, it now rewrites the NUKE build project in place: `Nuke.*` references and properties go, and `Tamp.Core` plus the wrapper packages the build uses are added. It writes `tamp init`'s bootstrap (`tamp.sh`, `tamp.cmd`, and `dotnet-tamp` in the tool manifest, from the same source as `tamp init`), and refuses to run on a dirty git working tree (`--allow-dirty` overrides). A first dogfood on NSwag's NUKE build ([`docs/nuke-migration/dogfood-nswag.md`](docs/nuke-migration/dogfood-nswag.md)) found and fixed these silent failures:
   - the template `Configuration` class
   - qualified `Serilog.Log` calls
@@ -21,7 +22,6 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 - **`Tamp.Migrate`: the NUKE → Tamp rewriter** ([#131](https://github.com/tamp-build/tamp/issues/131), ADR 0021 Phase 2a). A separate dotnet tool, `tamp-migrate nuke [--root] [--build-dir] [--dry-run] [--package-major]`, so Roslyn stays out of the `tamp` tool every CI run installs (the packaging ADR 0021 settled). It parses the NUKE build with no restore and no compile, and applies the `auto` rows of the embedded `mapping.yaml`. No rule is hardcoded: base class, `Main` → `Execute<T>(args)` plus `.Default()` on the target (across partial files), usings (from a new `namespaces:` table), injection attributes, path helpers, the target DSL, and `DotNetTasks.*` → `DotNet.*` with every setting rewritten per the mapping. A call that ran a tool becomes `ProcessRunner.Run(DotNet.X(..))` in a statement, or the returned plan in `Executes(() => ..)`. Every other recognised site gets a `// TAMP-MIGRATE(<rule-id>): <what to do>` marker and is left alone, including unmapped verbs and settings, tool results that are used, families that aren't `auto`, and known gaps. `tamp-migration.json` / `.md` count each site as applied, assisted, manual or unmapped. A second run changes nothing.
 
 ### Changed
-
 - **NUKE migration mapping, schema 0.2** ([#58](https://github.com/tamp-build/tamp/issues/58), Phase 2 step 1). `docs/nuke-migration/mapping.yaml` is now what `tamp migrate nuke` will apply. Every rule has a stable `id`, a `match` and `rewrite` from a closed vocabulary, a `marker` for anything not `auto`, and `verify`: the Tamp symbols it relies on. The new `tests/Tamp.Migrate.Tests` checks those symbols against Tamp.Core, Tamp.NetCli and Tamp.Components by reflection. That check corrected six rows of the reference:
   - `CreateOrCleanDirectory` maps to `DeleteDirectory().CreateDirectory()`, and `Copy` / `Move` map to `CopyTo` / `MoveTo`. `CopyFile`, `MoveFile` and `CreateOrCleanDirectory` don't exist in Tamp.
   - Serilog `Log.*` maps to console output, which Tamp captures per target. Build code has no `Log`.
@@ -31,6 +31,18 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
   - Components are covered (shipped in 1.17).
   
   New rows: CI-generation attributes, `.Unlisted()` → `.Internal()`, `.Description`, unmapped DSL calls, unshipped components, and more DotNet settings. Scope is NUKE 8+. ADR 0021 is accepted, with the Phase 2 design. The migration moves to 1.19 on the roadmap.
+
+
+
+- **Sonar new-code reliability findings cleared** ([#132](https://github.com/tamp-build/tamp/issues/132)): ~45 sync-over-async call sites in `tools/findings-ingest` (S6966), the self-build script moved into a named namespace (S3903), and a test without an assertion (S2699). `PollingTests` now runs on a virtual `TimeProvider` ([#142](https://github.com/tamp-build/tamp/issues/142)), so its assertions no longer depend on how fast the machine is; `Polling.Until` takes the clock internally.
+
+### Fixed
+- **`tamp migrate` no longer suggests installing the .NET 10 SDK when the migration itself declined to run.** The forwarder printed its "`dotnet tool execute` needs the .NET 10 SDK; install `Tamp.Migrate` instead" hint on any non-zero exit, so a refusal on a dirty working tree came back with correct advice followed by irrelevant advice. The hint is now printed only for an exit code `Tamp.Migrate` does not produce itself, i.e. only when `dotnet tool execute` never got the tool running.
+
+### Security
+- **Every OS command Tamp launches is resolved to an absolute path first** ([#133](https://github.com/tamp-build/tamp/issues/133), Sonar S4036). `git`, `dotnet`, macOS `security` and Linux `secret-tool` went through the OS's own lookup, which on Windows searches the working directory before `PATH` and on every OS treats a relative or empty `PATH` entry as the current directory — so a planted `git.exe` in a checkout could be handed a secret. The new `ExecutableLocator` walks `PATH` itself, refuses relative entries and anything inside the current or the launch working directory, and prefers a known location where one exists (`/usr/bin/security`; the running `dotnet` host, then `DOTNET_ROOT`, so a repo-local SDK still works). `[FromPath]` tools keep the lenient walk: a tool the build deliberately puts on `PATH` under its own tree is a deliberate choice.
+- **Tamp.Core's regexes run under one shared match timeout** ([#134](https://github.com/tamp-build/tamp/issues/134), Sonar S6444). `TampRegex` holds the single timeout and surfaces a hit as an `InvalidDataException` naming what was being parsed — never as "no match", which would silently drop a project from a solution or lose a remote URL. The `.git/config` remote-URL pattern was also rewritten off a lazy `.+?` followed by `\s*$`, which re-tried at every character and went quadratic on a long whitespace run.
+- **CI and Release pin every external action to a commit SHA**, and `id-token: write` is scoped to the publish job alone ([#135](https://github.com/tamp-build/tamp/issues/135), Sonar S7637/S8233). A moved tag on an action in the publish job would otherwise have handed a third party the OIDC token that mints a nuget.org key. Dependabot now watches the pinned SHAs.
 
 ## [1.18.0] — 2026-11-04 — Long-running services: build cancellation, ManagedProcess, service.* events
 
