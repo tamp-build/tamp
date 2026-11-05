@@ -178,6 +178,7 @@ jobs:
     environment: release
     permissions:
       contents: write   # create the GitHub Release for this tag (tamp#159); read would not suffice
+      issues: write     # announce the shipped version on the issues this release carries (tamp#164)
       id-token: write   # OIDC token for nuget.org trusted publishing (NuGet/login). This job only.
 
     steps:
@@ -335,6 +336,11 @@ jobs:
           fi
 
           echo "Release: $(gh release view "$TAG" --json url --jq .url)"
+
+          # Announce the shipped version on every issue this release carries. A closing comment
+          # cannot do it when the issue is closed before the release exists — it can only promise a
+          # version, and the promise is what gets forgotten (tamp#164).
+          bash .github/scripts/announce-release.sh "$TAG" "$notes" ||             echo "::warning::Issue announcements failed; the release itself is unaffected."
 
       - name: Dry-run summary
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
