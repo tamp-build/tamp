@@ -27,6 +27,13 @@ public sealed class Solution
     public IReadOnlyList<SolutionProject> Projects { get; }
     public IReadOnlyList<SolutionFolder> Folders { get; }
 
+    /// <summary>
+    /// The solution file's path, for string-taking APIs: <c>DotNet.Build(s =&gt; s.SetProject(Solution))</c>.
+    /// Mirrors <see cref="AbsolutePath"/>'s conversion, and NUKE's <c>Solution</c>, so a NUKE build's
+    /// <c>SetProjectFile(Solution)</c> migrates to <c>SetProject(Solution)</c> unchanged.
+    /// </summary>
+    public static implicit operator string(Solution solution) => solution.Path.Value;
+
     /// <summary>Find a project by its display name (case-insensitive).</summary>
     public SolutionProject? GetProject(string name)
         => Projects.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));

@@ -270,4 +270,18 @@ public sealed class SolutionTests : IDisposable
         var sln = Solution.Load(slnx);
         Assert.Null(sln.GetProject("Missing"));
     }
+
+    [Fact]
+    public void Solution_Converts_To_Its_Path_For_String_Taking_Apis()
+    {
+        // NUKE parity: `SetProject(Solution)` passes the solution file's path (the migrator's SetProjectFile row).
+        var sln = Write("Legacy.sln", "Microsoft Visual Studio Solution File, Format Version 12.00\nGlobal\nEndGlobal\n");
+        var solution = Solution.Load(sln);
+
+        string asString = solution;
+
+        Assert.Equal(sln.Value, asString);
+        Assert.Equal(solution.Path.Value, Takes(solution));
+        static string Takes(string project) => project;
+    }
 }
