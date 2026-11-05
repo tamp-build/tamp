@@ -296,8 +296,10 @@ public sealed class MigratorTests
     {
         var result = new NukeMigrator(Mapping).Migrate([new SourceFile("build/Build.cs", NukeHeader + "}\n")],
             ["build.sh", "build.cmd", "README.md", ".nuke/parameters.json", ".nuke/temp/x"]);
-        var files = result.Report.Sites.Where(s => s.RuleId == "boilerplate.bootstrap-scripts").Select(s => s.File).ToList();
-        Assert.Equal([".nuke/parameters.json", "build.cmd", "build.sh"], files); // report order: by file
+        var sites = result.Report.Sites.Where(s => s.RuleId == "boilerplate.bootstrap-scripts").ToList();
+        Assert.Equal([".nuke/parameters.json", "build.cmd", "build.sh"], sites.Select(s => s.File)); // one per glob, by file
+        Assert.All(sites, s => Assert.Equal(Outcome.Assisted, s.Outcome)); // the tamp init bootstrap was generated
+        Assert.Equal(["tamp.sh", "tamp.cmd", ".config/dotnet-tools.json"], result.Generated.Select(g => g.Path));
     }
 
     [Fact]

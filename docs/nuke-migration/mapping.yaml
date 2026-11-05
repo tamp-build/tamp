@@ -52,7 +52,8 @@ adr: docs/adr/0021-nuke-to-tamp-migration.md
 handlers:
   entrypoint-default: "Rewrite Main to `public static int Main(string[] args) => Execute<T>(args);` and add `.Default()` to the target Execute selected."
   usings: "Drop `using Nuke.*`; add `using Tamp;` plus one using per tool family / component namespace the build uses. A Nuke namespace with no mapping is left with a marker."
-  scaffold-bootstrap: "Generate tamp.sh / tamp.cmd and build/Build.csproj (the `tamp init` scaffold); NUKE's scripts and .nuke/ are left for the user to delete."
+  scaffold-bootstrap: "Generate tamp.sh / tamp.cmd and the dotnet-tamp tool-manifest entry (the `tamp init` scaffold); NUKE's scripts and .nuke/ are left for the user to delete."
+  build-project: "Rewrite the NUKE build project in place: drop Nuke.* references and Nuke* properties, add Tamp.Core plus one package per wrapper family the build uses; keep everything else."
   secret-field: "`[Secret] [Parameter] readonly string X;` -> `[Secret] readonly Secret X;`; uses that need the value become `X.Reveal()` (marked)."
   from-path: "`[PathExecutable] readonly Tool X;` -> `[FromPath(\"<name>\")] readonly Tool X;`; name = the attribute's argument, else the field name lower-cased."
   components-namespace: "Map `Nuke.Components.<I>` to `Tamp.Components.<I>` for the interfaces Tamp.Components ships; others are marked."
@@ -98,6 +99,14 @@ rules:
     match: { kind: file, globs: [build.sh, build.cmd, build.ps1, ".nuke/**"] }
     rewrite: { kind: handler, name: scaffold-bootstrap }
     marker: "Port any custom steps from NUKE's bootstrap scripts, then delete them and .nuke/."
+  - id: boilerplate.build-project
+    category: boilerplate
+    tier: assisted
+    nuke: "build/_build.csproj (Nuke.Common, PackageDownload tools)"
+    tamp: "the same project, referencing Tamp.Core and the Tamp wrapper packages the build uses"
+    match: { kind: file, globs: ["build/*.csproj"] }
+    rewrite: { kind: handler, name: build-project }
+    marker: "Review the rewritten build project. Nuke.* references are gone; a PackageDownload tool becomes a [NuGetPackage(\"<id>\", Version = \"<v>\")] Tool field in Tamp."
   - id: boilerplate.ci-generation
     category: boilerplate
     tier: manual

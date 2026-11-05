@@ -48,6 +48,9 @@ internal sealed class FileMigration
 
     public SyntaxTree Tree { get; }
 
+    /// <summary>The Tamp packages this file's converted code needs (tool wrappers, Tamp.Components).</summary>
+    public HashSet<string> Packages { get; } = new(StringComparer.Ordinal);
+
     /// <summary><c>Main</c> methods that call NUKE's <c>Execute&lt;T&gt;(x =&gt; x.Target)</c>, with the target names.</summary>
     public List<(MethodDeclarationSyntax Main, List<string> Defaults)> EntryPoints { get; } = [];
 
@@ -571,6 +574,7 @@ internal sealed class FileMigration
                 {
                     add.Add("Tamp");
                     add.Add(family.NamespaceFor(major));
+                    Packages.Add(family.PackageFor(major));
                 }
                 if (family.Tier == Tier.Auto && !_familiesLeft.Contains(family))
                 {
@@ -598,6 +602,7 @@ internal sealed class FileMigration
                 var renamed = SyntaxFactory.ParseCompilationUnit($"using Tamp{name["Nuke".Length..]};{_eol}").Usings[0]
                     .WithLeadingTrivia(u.GetLeadingTrivia());
                 add.Add("Tamp");
+                Packages.Add("Tamp.Components");
                 result.Add(MarkUsing(renamed, original, componentsRule.Id, Outcome.Assisted, componentsRule.Marker!));
                 continue;
             }

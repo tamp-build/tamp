@@ -25,6 +25,7 @@ The single source of truth for converting a NUKE `Build.cs` to Tamp ([ADR 0021](
 | `public static int Main() => Execute<Build>(x => x.Default);` | `public static int Main(string[] args) => Execute<Build>(args);` | auto | NUKE picks the default target via the `Execute` arg; Tamp designates it with `.Default()` on the target (see §4). |
 | `using Nuke.Common;` / `Nuke.Common.*` | `using Tamp;` (+ per-tool `using Tamp.NetCli.V10;` etc.) | assisted | Drop `Nuke.Common.*`; add the Tamp namespaces for the wrappers actually used. |
 | `build.sh` / `build.cmd` / `.nuke/` | `tamp.sh` / `tamp.cmd` (from `tamp init`) | assisted | Regenerate the bootstrap via `dotnet tamp init`; don't port NUKE's. |
+| `build/_build.csproj` (`Nuke.Common`, `PackageDownload`) | the same project, referencing `Tamp.Core` + the wrappers used | assisted | `tamp migrate nuke` rewrites it in place. A `PackageDownload` tool becomes a `[NuGetPackage("<id>", Version = "<v>")] Tool` field. |
 | `[UnsetVisualStudioEnvironmentVariables]` and other build-attributes | (drop) | manual | No Tamp equivalent; usually unnecessary. |
 | `[GitHubActions(...)]` / `[AzurePipelines(...)]` / other CI-generation attributes | — | manual | Tamp doesn't generate CI configuration. Keep the existing pipeline file, point it at `./tamp.sh`, and delete the attribute. |
 

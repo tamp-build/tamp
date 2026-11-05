@@ -27,6 +27,16 @@
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
   </ItemGroup>
 
+  <!-- Tamp.Core: the strict ExecutableLocator for the clean-tree git check (#133). -->
+  <ItemGroup>
+    <ProjectReference Include="..\Tamp.Core\Tamp.Core.csproj" />
+  </ItemGroup>
+
+  <!-- tamp init's bootstrap, one copy: a migrated build gets exactly the scaffold a new one does. -->
+  <ItemGroup>
+    <Compile Include="..\Tamp.Cli\Scaffold\Templates\BootstrapFiles.cs" Link="Scaffold\BootstrapFiles.cs" />
+  </ItemGroup>
+
   <!-- The mapping is embedded, so a given tool version always applies the mapping it was tested with. -->
   <ItemGroup>
     <EmbeddedResource Include="..\..\docs\nuke-migration\mapping.yaml" LogicalName="Tamp.Migrate.mapping.yaml" />

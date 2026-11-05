@@ -11,10 +11,12 @@ public sealed record SourceFile(string Path, string Text);
 
 /// <summary>Knobs for a migration run.</summary>
 /// <param name="PackageMajor">Major for <c>{N}</c>-versioned wrappers (<c>Tamp.NetCli.V{N}</c>); default: the newest the mapping lists.</param>
-public sealed record MigrationOptions(int? PackageMajor = null);
+/// <param name="TampVersion">Version for the Tamp package references; default: this tool's own (one release train).</param>
+/// <param name="BuildDirectory">The NUKE build project's directory, relative to the repository root.</param>
+public sealed record MigrationOptions(int? PackageMajor = null, string? TampVersion = null, string BuildDirectory = "build");
 
-/// <summary>The rewritten files (same order as the input) and the coverage report.</summary>
-public sealed record MigrationResult(IReadOnlyList<SourceFile> Files, MigrationReport Report);
+/// <summary>The rewritten files (same order as the input), the other files the migration writes, and the coverage report.</summary>
+public sealed record MigrationResult(IReadOnlyList<SourceFile> Files, IReadOnlyList<GeneratedFile> Generated, MigrationReport Report);
 
 /// <summary>
 /// The <c>tamp migrate nuke</c> rewriter (ADR 0021, Phase 2). Syntactic only: it parses the NUKE build with
@@ -61,8 +63,9 @@ public sealed class NukeMigrator
     };
 
     /// <param name="files">The build's C# files.</param>
-    /// <param name="repositoryFiles">Repository-relative paths, for the <c>file</c> rules (bootstrap scripts).</param>
-    public MigrationResult Migrate(IReadOnlyList<SourceFile> files, IEnumerable<string>? repositoryFiles = null)
+    /// <param name="repositoryFiles">Repository-relative paths, for the <c>file</c> rules (build project, bootstrap scripts).</param>
+    /// <param name="readFile">Reads a repository-relative file the <c>file</c> rules rewrite; null when it doesn't exist.</param>
+    public MigrationResult Migrate(IReadOnlyList<SourceFile> files, IEnumerable<string>? repositoryFiles = null, Func<string, string?>? readFile = null)
     {
         var sites = new List<MigrationSite>();
         var trees = files.Select(f => CSharpSyntaxTree.ParseText(f.Text, ParseOptions, f.Path)).ToList();
@@ -81,14 +84,21 @@ public sealed class NukeMigrator
             output.Add(new SourceFile(files[i].Path, text));
         }
 
-        if (repositoryFiles is not null) FileRules(repositoryFiles.ToList(), sites);
+        var generated = new List<GeneratedFile>();
+        if (repositoryFiles is not null)
+        {
+            var scaffolder = new BuildScaffolder(_mapping, _options, repositoryFiles.Select(f => f.Replace('\\', '/')).ToList(), readFile ?? (_ => null));
+            scaffolder.Run(migrations.SelectMany(m => m.Packages).ToHashSet(StringComparer.Ordinal));
+            generated = scaffolder.Generated;
+            sites.AddRange(scaffolder.Sites);
+        }
 
         var ordered = sites.OrderBy(s => s.File, StringComparer.Ordinal).ThenBy(s => s.Line).ThenBy(s => s.RuleId, StringComparer.Ordinal).ToList();
-        return new MigrationResult(output, new MigrationReport
+        return new MigrationResult(output, generated, new MigrationReport
         {
             MappingVersion = _mapping.Version,
             Files = files.Select(f => f.Path).ToList(),
-            ChangedFiles = changed,
+            ChangedFiles = changed.Concat(generated.Select(g => g.Path)).ToList(),
             Sites = ordered,
         });
     }
@@ -144,23 +154,6 @@ public sealed class NukeMigrator
         return method.ReplaceNode(call, call.WithArgumentList(args.WithTriviaFrom(call.ArgumentList)));
     }
 
-    private void FileRules(List<string> repositoryFiles, List<MigrationSite> sites)
-    {
-        foreach (var rule in _mapping.Rules.Where(r => r.MatchKind == "file"))
-        {
-            var matched = rule.Globs
-                .Select(g => repositoryFiles.FirstOrDefault(f => GlobMatches(g, f.Replace('\\', '/'))))
-                .Where(f => f is not null)
-                .Distinct(StringComparer.Ordinal);
-            foreach (var file in matched)
-                sites.Add(new MigrationSite(file!, 0, rule.Id, Outcome.Manual, rule.Marker));
-        }
-    }
-
-    private static bool GlobMatches(string glob, string path) =>
-        glob.EndsWith("/**", StringComparison.Ordinal)
-            ? path.StartsWith(glob[..^2], StringComparison.OrdinalIgnoreCase)
-            : string.Equals(glob, path, StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>Facts about the whole build gathered before any file is rewritten (partial classes span files).</summary>
