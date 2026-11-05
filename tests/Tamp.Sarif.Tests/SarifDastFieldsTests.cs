@@ -251,7 +251,7 @@ public class SarifDastFieldsTests
         var withoutFingerprint = withFingerprint with { PartialFingerprints = null };
 
         Assert.Equal(
-            SarifDedup.ComputeKey(withFingerprint),
-            SarifDedup.ComputeKey(withoutFingerprint));
+            SarifDedup.DefaultKey(withFingerprint),
+            SarifDedup.DefaultKey(withoutFingerprint));
     }
 }

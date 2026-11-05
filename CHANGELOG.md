@@ -10,6 +10,24 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ### Fixed
 
+- **`SarifMerge.CombineDistinct` no longer documented as the general multi-tool path** ([#155](https://github.com/tamp-build/tamp/issues/155)). It was described as "the common path when stitching together SARIF from sources that re-analyse the same source per TFM (Roslyn) or scan overlapping directories (multi-tool pipelines)", and the dedup key — `(ruleId, URI, line, column, logical fullyQualifiedName)` — has no component or version term of its own. A dependency scanner reports the advisory as `ruleId`, the lockfile as the URI, the same line for every result and the affected version only in the message text, so **distinct affected versions of one package collapsed into a single result**: the defect fixed in [tamp-grype#6](https://github.com/tamp-build/tamp-grype/issues/6), re-introduced by anyone following the documentation. Measured on grype 0.112.0's native SARIF, 299 results collapse to **268**.
+
+  The guidance is now a condition rather than a category, because the key already has a slot for component identity: `CombineDistinct` is safe when the producer puts it in `logicalLocations.fullyQualifiedName`, and not when the producer puts the *path* there or omits logical locations. `Tamp.Grype` 0.2.0 puts the purl there, and the same document passes through 299 → 299.
+
+  Also documents the attribution effect: duplicates are collapsed *across* runs, so a finding two tools both reported is attributed to whichever run came first in input order. Every run survives, so "which tools ran" stays answerable; "which tools found this" does not. The class summary previously read as a stronger guarantee than `CombineDistinct` gives. Tracked for a behavioural fix in [#156](https://github.com/tamp-build/tamp/issues/156).
+
+  No live misuse existed in the fleet: the only callers are the OpenGrep + per-TFM Roslyn merge in `SecurityPipelineBuild.SecurityScan`, which is exactly the case the helper was built for. That call site now carries a comment saying why it is correct there, and why the CVE and Trivy SARIFs must not be added to it.
+
+### Added
+
+- **`SarifDedup.Distinct(log, keySelector)` and `SarifMerge.CombineDistinct(logs, keySelector)`** ([#155](https://github.com/tamp-build/tamp/issues/155)) — a key seam, so a caller with package-level findings is not forced to choose between full dedup and none. `SarifDedup.ComputeKey` is promoted to public **`SarifDedup.DefaultKey`** so a selector can compose onto it rather than reimplement it, which is what callers usually want: `$"{SarifDedup.DefaultKey(r)}|{purl}"`.
+
+  No built-in "package key" is offered, deliberately: where component identity lives is producer-specific, and a built-in would have to guess.
+
+  **Producer fingerprints are deliberately not the default key**, even though SARIF nominates `fingerprints` / `partialFingerprints` as a result's identity — a fingerprint is only as good as the producer. grype 0.112.0's `primaryLocationLineHash` identifies the package-version rather than the finding, with 35 distinct advisories against one package version sharing a fingerprint, so the same 299 results carry just **62** distinct fingerprints. Preferring them would turn a 10% collapse into a 79% one. There is a test pinning that.
+
+### Fixed
+
 - **A skipped security scan no longer reports as a clean one** ([#151](https://github.com/tamp-build/tamp/issues/151)). `SecurityPipelineMetrics.EmitFindingsFromSarif` returned `0` when the SARIF did not exist, and `EmitComponentsFromBom` did the same for a missing BOM, so `tamp.security.scan.findings_count` emitted the same observation — nothing — for *"this scanner ran and found nothing"* and *"this scanner never ran"*. An unsettled Dependency-Track analysis likewise logged a line and let `SecurityPush` go green. In all three places an **unknown** outcome was reported as a **good** one, which is the failure direction a security control must never take.
 
   Evidence now carries its own reliability instead of having it inferred from a count: `SecurityEvidenceStatus` is `NotRun`, `Unreadable` or `Completed`, and only the last makes a count of zero mean "looked and found nothing". New readers `ReadSarifScan`, `ReadSarifScanDirectory`, `ReadScan` and `ReadBom` return a `SecurityScanReport` / `SecuritySbomReport` saying *why* there is no result. `EmitFindingsFromSarif` and `EmitComponentsFromBom` keep their signatures and now emit the status too, so existing callers get the fix without a change.

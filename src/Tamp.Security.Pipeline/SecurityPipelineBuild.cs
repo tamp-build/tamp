@@ -191,8 +191,23 @@ public abstract class SecurityPipelineBuild : TampBuild
                 .SetNoIncremental(true));
         });
 
+    /// <summary>
+    /// Merge the SAST sources into one SARIF. <b>Code scanners only</b> — see the remarks.
+    /// </summary>
+    /// <remarks>
+    /// <c>CombineDistinct</c> is correct here and only here: both inputs are code scanners, and the
+    /// Roslyn leg emits one copy of each source-level finding per target framework via
+    /// <c>/p:ErrorLog</c>, which is exactly what the dedup key folds back together.
+    /// <para>
+    /// <b>Do not add the CVE or Trivy SARIF to this merge</b> (tamp#155). The dedup key has no
+    /// component or version term, so package findings — which share an advisory id, a lockfile URI
+    /// and a line, and differ only in message text — collapse one per affected version. Measured on
+    /// grype 0.112.0's native SARIF: 299 results become 268. Those reports are published separately
+    /// for that reason, and merging them here would under-report silently.
+    /// </para>
+    /// </remarks>
     protected virtual Target SecurityScan => _ => _
-        .Description($"Combine OpenGrep SARIF + per-(project, TFM) Roslyn SARIFs into {nameof(SecuritySarifSastFile)} via SarifMerge.CombineDistinct.")
+        .Description($"Combine OpenGrep SARIF + per-(project, TFM) Roslyn SARIFs into {nameof(SecuritySarifSastFile)} via SarifMerge.CombineDistinct. Code scanners only — package findings would collapse (tamp#155).")
         .DependsOn(nameof(SecurityScanOpenGrep), nameof(SecurityScanRoslyn))
         // #151 collect stage: assured so one scanner's failure cannot suppress the others'
         // evidence, nor the publish stage downstream. The target still reports failed and the

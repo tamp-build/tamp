@@ -121,7 +121,7 @@ public class SarifLogicalLocationTests
             ],
         };
 
-        Assert.NotEqual(SarifDedup.ComputeKey(a), SarifDedup.ComputeKey(b));
+        Assert.NotEqual(SarifDedup.DefaultKey(a), SarifDedup.DefaultKey(b));
     }
 
     [Fact]
@@ -131,7 +131,7 @@ public class SarifLogicalLocationTests
         var a = McpResult();
         var b = McpResult();
 
-        Assert.Equal(SarifDedup.ComputeKey(a), SarifDedup.ComputeKey(b));
+        Assert.Equal(SarifDedup.DefaultKey(a), SarifDedup.DefaultKey(b));
 
         var merged = SarifDedup.Distinct(new SarifLog { Runs = [a.InOneRun(), b.InOneRun()] });
         Assert.Single(merged.Runs.SelectMany(r => r.Results ?? []));
@@ -161,8 +161,8 @@ public class SarifLogicalLocationTests
         };
         var physicalOnlyToo = physicalOnly with { };
 
-        Assert.Equal(SarifDedup.ComputeKey(physicalOnly), SarifDedup.ComputeKey(physicalOnlyToo));
-        Assert.NotEqual(SarifDedup.ComputeKey(physicalOnly), SarifDedup.ComputeKey(withLogical));
+        Assert.Equal(SarifDedup.DefaultKey(physicalOnly), SarifDedup.DefaultKey(physicalOnlyToo));
+        Assert.NotEqual(SarifDedup.DefaultKey(physicalOnly), SarifDedup.DefaultKey(withLogical));
     }
 }
 
