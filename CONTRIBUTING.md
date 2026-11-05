@@ -81,9 +81,21 @@ A closing comment says, briefly:
    be met. If the issue's acceptance criteria cannot be verified from here, say which ones and what
    would verify them.
 
-When the fix ships later than the merge, **go back and comment the version** on the already-closed
-issue. An issue that says "fixed" without a version cannot be acted on by someone deciding whether to
-upgrade.
+When the fix ships later than the merge — which is the common case, since a core fix is merged well
+before core is cut — the closing comment can only promise a version, and **a promise is not the
+second half of this rule.** Say "merged to `main`, unreleased" *and* apply the **`awaiting-release`**
+label. The release workflow then announces the version on every issue that is both cited in the
+release notes and carrying that label, so the loop closes without anyone remembering to close it
+(#164).
+
+The label is the part that matters. An undertaking in prose is not queryable, so a forgotten one is
+invisible; a label makes the set of issues waiting for a version a list anyone can pull. Both halves
+are required because either alone fails: the notes also cite issues for context, so announcing on
+every cited issue would claim a version for things that did not ship, and announcing on every
+labelled issue would claim one for fixes merged after the tag.
+
+An issue that says "fixed" without a version cannot be acted on by someone deciding whether to
+upgrade, and an issue that says "unreleased" forever is the same problem wearing a different word.
 
 ```markdown
 Fixed in **Tamp.Grype 0.2.0** — https://www.nuget.org/packages/Tamp.Grype/0.2.0

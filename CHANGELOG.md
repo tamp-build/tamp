@@ -8,6 +8,18 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+### Added
+
+- **The shipped version is announced on an issue when its release is published** ([#164](https://github.com/tamp-build/tamp/issues/164)). `CONTRIBUTING.md` required every closing comment to name its release, but an issue closed *before* the release is cut can only promise one — and the promise is what gets forgotten. #151 and #155 were both closed with "I will comment the version when it is cut", both shipped in 1.20.0, and neither got the comment. The link existed in one direction only: from the release notes to the issue, never back.
+
+  `release.yml` now runs [`.github/scripts/announce-release.sh`](.github/scripts/announce-release.sh) after creating the Release. An issue is announced when **both** its number appears in the release notes **and** it carries the new `awaiting-release` label. The intersection is deliberate: notes also cite issues for context ("tracked in #162", "see the epic #58"), so announcing on every cited issue would claim a version for work that did not ship — a false statement, which is worse than a missing comment. Announcing on every labelled issue would be wrong the other way, for a fix merged after the tag. A missing comment is recoverable and the label keeps it visible; a wrong one is not.
+
+  Never fails a release: by that point the packages are public and irreversible, so a problem announcing is a warning and nothing more. The script is dependency-free so it copies into the satellites.
+
+  The publish job gains `issues: write`, scoped to that job alone.
+
+  **#151 and #155 have been backfilled with 1.20.0.**
+
 ## [1.20.0] - 2026-11-05 - Security staging, SARIF dedup identity, and release notes that reach people
 
 ### Added
