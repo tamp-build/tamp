@@ -19,6 +19,7 @@
 #               attribute  {names}               an attribute on a member or class
 #               invocation {names, receiver?}    a call `X.Name(...)` / `Name(...)`; receiver = simple name of X
 #               identifier {names}               a non-invoked name (property, type)
+#               member     {names}               a member access `x.Name` (not invoked), or a member declared with that name
 #               using      {namespace}           a using directive for this namespace or a child of it
 #               entrypoint {}                    `Main() => Execute<T>(x => x.Target)`
 #               field_invocation {attributes}    a delegate call on a field carrying one of these attributes
@@ -53,6 +54,7 @@ handlers:
   entrypoint-default: "Rewrite Main to `public static int Main(string[] args) => Execute<T>(args);` and add `.Default()` to the target Execute selected."
   usings: "Drop `using Nuke.*`; add `using Tamp;` plus one using per tool family / component namespace the build uses. A Nuke namespace with no mapping is left with a marker."
   scaffold-bootstrap: "Generate tamp.sh / tamp.cmd and the dotnet-tamp tool-manifest entry (the `tamp init` scaffold); NUKE's scripts and .nuke/ are left for the user to delete."
+  configuration-class: "Remove the `nuke :setup` template's `class Configuration : Enumeration` (just Debug and Release) so the build uses Tamp's built-in Configuration; any other Enumeration is marked."
   build-project: "Rewrite the NUKE build project in place: drop Nuke.* references and Nuke* properties, add Tamp.Core plus one package per wrapper family the build uses; keep everything else."
   secret-field: "`[Secret] [Parameter] readonly string X;` -> `[Secret] readonly Secret X;`; uses that need the value become `X.Reveal()` (marked)."
   from-path: "`[PathExecutable] readonly Tool X;` -> `[FromPath(\"<name>\")] readonly Tool X;`; name = the attribute's argument, else the field name lower-cased."
@@ -99,6 +101,15 @@ rules:
     match: { kind: file, globs: [build.sh, build.cmd, build.ps1, ".nuke/**"] }
     rewrite: { kind: handler, name: scaffold-bootstrap }
     marker: "Port any custom steps from NUKE's bootstrap scripts, then delete them and .nuke/."
+  - id: boilerplate.configuration-class
+    category: boilerplate
+    tier: assisted
+    nuke: "class Configuration : Enumeration { Debug, Release } (the nuke :setup template's build/Configuration.cs)"
+    tamp: "Tamp.Configuration, built in (Debug / Release)"
+    match: { kind: base_type, names: [Enumeration] }
+    rewrite: { kind: handler, name: configuration-class }
+    marker: "Configuration is now Tamp's built-in enum, not NUKE's string-like class. It works as a parameter and in SetConfiguration; where it was used as a string (a path segment, string concatenation), write Configuration.ToString()."
+    verify: [Tamp.Configuration.Debug, Tamp.Configuration.Release]
   - id: boilerplate.build-project
     category: boilerplate
     tier: assisted
@@ -106,7 +117,21 @@ rules:
     tamp: "the same project, referencing Tamp.Core and the Tamp wrapper packages the build uses"
     match: { kind: file, globs: ["build/*.csproj"] }
     rewrite: { kind: handler, name: build-project }
-    marker: "Review the rewritten build project. Nuke.* references are gone; a PackageDownload tool becomes a [NuGetPackage(\"<id>\", Version = \"<v>\")] Tool field in Tamp."
+    marker: "Review the rewritten build project. Nuke.* references are gone, and so is anything NUKE brought in transitively (Microsoft.Build, for one): add a PackageReference for any of it the build uses. A PackageDownload tool becomes a [NuGetPackage(\"<id>\", Version = \"<v>\")] Tool field in Tamp."
+  - id: boilerplate.lifecycle-hooks
+    category: boilerplate
+    tier: manual
+    nuke: "protected override void OnBuildInitialized() (and OnBuildCreated / OnBuildFinished / OnTarget*)"
+    tamp: null
+    match: { kind: member, names: [OnBuildCreated, OnBuildInitialized, OnBuildFinished, OnTargetRunning, OnTargetSucceeded, OnTargetFailed, OnTargetSkipped] }
+    marker: "TampBuild has no lifecycle hooks. Move this into a target the others DependsOn (or that runs first with .Before(...)), or into the build class's constructor."
+  - id: boilerplate.configure-delegate
+    category: boilerplate
+    tier: manual
+    nuke: "Configure<DotNetPackSettings> PackSettings => _ => _.SetX(...)"
+    tamp: null
+    match: { kind: identifier, names: [Configure] }
+    marker: "NUKE's Configure<T> settings delegate has no Tamp type. Inline the setters into the DotNet.X(s => ...) call, or keep a helper method that takes and returns Tamp's settings type."
   - id: boilerplate.ci-generation
     category: boilerplate
     tier: manual
@@ -174,11 +199,21 @@ rules:
     marker: "Add Tamp.GitVersion.V6 and call GitVersion.Run in the target that needs the version, instead of an injected field."
   - id: injection.git-repository
     category: injection
-    tier: manual
+    tier: assisted
     nuke: "[GitRepository] readonly GitRepository Repository;"
-    tamp: null
+    tamp: "[GitRepository] readonly GitRepository Repository;"
     match: { kind: attribute, names: [GitRepository] }
-    marker: "No injected GitRepository. Read repo facts with git ([FromPath(\"git\")] Tool) or Tamp.GitHubCli.V2."
+    rewrite: { kind: keep }
+    marker: "Tamp's GitRepository has Branch, Commit, RemoteUrl and IsDetachedHead. NUKE members such as Tags, IsOnMainOrMasterBranch() or GetGitHubOwner() aren't there: read them with git ([FromPath(\"git\")] Tool) or Tamp.GitHubCli.V2."
+    verify: [Tamp.GitRepositoryAttribute, Tamp.GitRepository.Branch, Tamp.GitRepository.Commit, Tamp.GitRepository.RemoteUrl]
+  - id: injection.solution-all-projects
+    category: injection
+    tier: auto
+    nuke: "Solution.AllProjects"
+    tamp: "Solution.Projects (every project, solution folders included)"
+    match: { kind: member, names: [AllProjects] }
+    rewrite: { kind: rename, to: Projects }
+    verify: [Tamp.Solution.Projects]
   - id: injection.is-local-build
     category: injection
     tier: auto
@@ -643,7 +678,7 @@ gaps:
     - { id: gap.nuget-exe, nuke: [NuGetTasks], tamp: "DotNet.Pack / DotNet.NuGetPush / DotNet.Restore", note: "SDK path unless nuget.exe specifically needed" }
   framework_features:    # not tools
     - { id: gap.partition, feature: "[Partition] / partitioned parallelism", status: none, note: "biggest hard gap; run serially or shard outside Tamp (target_dsl.partition)" }
-    - { id: gap.git-repository, feature: "[GitRepository] injection", status: none, note: "use git / Tamp.GitHubCli.V2 (injection.git-repository)" }
+    - { id: gap.git-repository, feature: "[GitRepository] injection", status: covered, tamp: "[GitRepository] (Branch / Commit / RemoteUrl)", note: "NUKE's richer members aren't there (injection.git-repository)" }
     - { id: gap.ci-generation, feature: "CI configuration generation ([GitHubActions] etc.)", status: none, note: "keep the existing pipeline file (boilerplate.ci-generation)" }
     - { id: gap.components, feature: "Nuke.Components", status: covered, tamp: "Tamp.Components (ADR 0020)", note: "IHazSolution/IHazConfiguration/IHazArtifacts/IRestore/ICompile/ITest/IPack ship; the rest are components.unshipped" }
     - { id: gap.logging, feature: "Serilog Log.*", status: covered, tamp: "per-target captured console output", note: "logging.serilog" }

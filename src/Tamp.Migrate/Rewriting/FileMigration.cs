@@ -26,7 +26,7 @@ internal sealed class FileMigration
     private readonly string _path;
     private readonly BuildIndex _build;
     private readonly List<MigrationSite> _sites;
-    private readonly Dictionary<SyntaxNode, List<Func<SyntaxNode, SyntaxNode>>> _edits = [];
+    private readonly Dictionary<SyntaxNode, List<Func<SyntaxNode, SyntaxNode?>>> _edits = [];
     private readonly Dictionary<SyntaxNode, List<(int Position, string Line)>> _markers = [];
     private readonly string _eol;
 
@@ -64,6 +64,12 @@ internal sealed class FileMigration
             .Where(t => t is not null)
             .Cast<ToolFamily>()
             .ToList();
+        // Every family this file reaches, by `using static ..XyzTasks` or `using Nuke.Common.Tools.Xyz`.
+        var families = staticFamilies
+            .Concat(Root.Usings.Where(u => u.StaticKeyword == default && u.Name is not null)
+                .SelectMany(u => _mapping.Tools.Where(t => t.NukeNamespace == u.Name!.ToString())))
+            .Distinct()
+            .ToList();
 
         foreach (var node in Root.DescendantNodes())
         {
@@ -72,8 +78,12 @@ internal sealed class FileMigration
                 case SimpleBaseTypeSyntax b: BaseType(b); break;
                 case AttributeSyntax a: Attribute(a); break;
                 case InvocationExpressionSyntax i: Invocation(i, staticFamilies); break;
-                case IdentifierNameSyntax id: Identifier(id); break;
-                case MethodDeclarationSyntax m: Method(m); break;
+                case IdentifierNameSyntax id: Identifier(id); SettingsType(id, families); break;
+                case GenericNameSyntax g: GenericIdentifier(g); break;
+                case MemberAccessExpressionSyntax ma: Member(ma); break;
+                case MethodDeclarationSyntax m: Method(m); MemberDeclaration(m, m.Identifier.Text); break;
+                case PropertyDeclarationSyntax p: MemberDeclaration(p, p.Identifier.Text); ConfigurationMember(p, p.Type); break;
+                case FieldDeclarationSyntax f: ConfigurationMember(f, f.Declaration.Type); break;
             }
         }
     }
@@ -85,6 +95,11 @@ internal sealed class FileMigration
         var name = b.Type switch { QualifiedNameSyntax q => q.Right.Identifier.Text, SimpleNameSyntax s => s.Identifier.Text, _ => null };
         foreach (var rule in Rules("base_type").Where(r => r.Names.Contains(name!)))
         {
+            if (rule.Handler == "configuration-class")
+            {
+                ConfigurationClass(b, rule);
+                continue;
+            }
             if (rule.RewriteKind == "rename")
                 Edit(b.Type, n => SyntaxFactory.IdentifierName(rule.RewriteTo!).WithTriviaFrom(n));
             Site(b, rule, Outcome.Applied, null);
@@ -104,7 +119,7 @@ internal sealed class FileMigration
                 case ("keep", _):
                     // A [Parameter] next to [Secret] is consumed by the secret-field handler.
                     if (!(rule.Id == "injection.parameter" && siblings.Contains("Secret")))
-                        Site(a, rule, Outcome.Applied, null);
+                        Resolve(a, rule); // auto: applied; assisted (valid as written, but check): marker
                     break;
                 case ("rename", _):
                     Edit(a.Name, n => SyntaxFactory.IdentifierName(rule.RewriteTo!).WithTriviaFrom(n));
@@ -129,6 +144,13 @@ internal sealed class FileMigration
         if (name is null) return;
         var receiver = Syntax.Receiver(inv);
         var receiverName = (receiver as IdentifierNameSyntax)?.Identifier.Text;
+        // `Serilog.Log.Information(..)` names the receiver `Log` too: match a rule's receiver on the last name.
+        var receiverTail = receiver switch
+        {
+            IdentifierNameSyntax id => id.Identifier.Text,
+            MemberAccessExpressionSyntax ma => ma.Name.Identifier.Text,
+            _ => null,
+        };
 
         // NUKE tool task: `DotNetBuild(..)` under `using static ..DotNetTasks`, or `DotNetTasks.DotNetBuild(..)`.
         var family = receiverName is not null
@@ -164,7 +186,7 @@ internal sealed class FileMigration
 
         foreach (var rule in Rules("invocation").Where(r => r.Names.Contains(name)))
         {
-            if (rule.Receiver is not null && rule.Receiver != receiverName) continue;
+            if (rule.Receiver is not null && rule.Receiver != receiverTail) continue;
             if (rule.Receiver is null && receiverName is not null && BclReceivers.Contains(receiverName)) continue;
 
             switch (rule.RewriteKind)
@@ -217,6 +239,56 @@ internal sealed class FileMigration
         }
     }
 
+    // `x.AllProjects` (not invoked).
+    private void Member(MemberAccessExpressionSyntax ma)
+    {
+        if (ma.Parent is InvocationExpressionSyntax inv && inv.Expression == ma) return;
+        foreach (var rule in Rules("member").Where(r => r.Names.Contains(ma.Name.Identifier.Text)))
+        {
+            if (rule.RewriteKind == "rename")
+                Edit(ma, n => ((MemberAccessExpressionSyntax)n).WithName(SyntaxFactory.IdentifierName(rule.RewriteTo!).WithTriviaFrom(((MemberAccessExpressionSyntax)n).Name)));
+            Resolve(ma, rule, rewritten: rule.RewriteKind is "keep" or "rename");
+        }
+    }
+
+    // A member declared with a rule's name: NUKE's `protected override void OnBuildInitialized()`.
+    private void MemberDeclaration(MemberDeclarationSyntax member, string name)
+    {
+        foreach (var rule in Rules("member").Where(r => r.Names.Contains(name)))
+            Resolve(member, rule, rewritten: false);
+    }
+
+    // `Configure<DotNetPackSettings>`: an identifier rule matched on a generic name.
+    private void GenericIdentifier(GenericNameSyntax g)
+    {
+        if (g.Parent is InvocationExpressionSyntax inv && inv.Expression == g) return;
+        if (g.Parent is MemberAccessExpressionSyntax ma && ma.Name == g) return;
+        foreach (var rule in Rules("identifier").Where(r => r.Names.Contains(g.Identifier.Text)))
+            Resolve(g, rule, rewritten: false);
+    }
+
+    // `DotNetBuildSettings BuildDefaults(DotNetBuildSettings s)`: after the usings change, a NUKE settings type
+    // name silently names Tamp's type of the same name, whose setters differ. Derived from each family's verbs.
+    private void SettingsType(IdentifierNameSyntax id, IReadOnlyList<ToolFamily> families)
+    {
+        var name = id.Identifier.Text;
+        if (!name.EndsWith("Settings", StringComparison.Ordinal)) return;
+        if (id.Parent is MemberAccessExpressionSyntax ma && ma.Name == id) return;
+        var family = families.FirstOrDefault(f => f.Verbs.ContainsKey(name[..^"Settings".Length]));
+        if (family is null) return;
+        Mark(id, family.Id, Outcome.Manual,
+            $"{name} here was NUKE's settings type; it now names Tamp's {name}, whose setters differ. Check each setter used on it against {family.Id}'s settings, or inline them into the {family.Facade} call.");
+    }
+
+    // With the template Configuration removed, `Configuration` means Tamp's enum: flag where it's declared.
+    private void ConfigurationMember(MemberDeclarationSyntax member, TypeSyntax type)
+    {
+        if (!_build.TemplateConfiguration || type is not IdentifierNameSyntax { Identifier.Text: "Configuration" }) return;
+        if (member.FirstAncestorOrSelf<ClassDeclarationSyntax>() is { } cls && Syntax.IsTemplateConfiguration(cls)) return;
+        var rule = _mapping.Rules.First(r => r.Handler == "configuration-class");
+        Mark(member, rule.Id, Outcome.Assisted, rule.Marker!);
+    }
+
     private void Method(MethodDeclarationSyntax m)
     {
         if (m.Identifier.Text != "Main" || !m.Modifiers.Any(SyntaxKind.StaticKeyword)) return;
@@ -235,6 +307,27 @@ internal sealed class FileMigration
     }
 
     // ---------------------------------------------------------------- handlers
+
+    // The `nuke :setup` template: `class Configuration : Enumeration` with static Debug/Release fields and an
+    // implicit string conversion. Tamp has that type built in, and a build-declared one would hide it.
+    private void ConfigurationClass(SimpleBaseTypeSyntax b, MappingRule rule)
+    {
+        if (b.FirstAncestorOrSelf<ClassDeclarationSyntax>() is not { } cls) return;
+        var isTemplate = Syntax.IsTemplateConfiguration(cls);
+        if (!isTemplate)
+        {
+            Mark(cls, rule.Id, Outcome.Manual, cls.Identifier.Text == "Configuration"
+                ? "This Configuration has values beyond Debug/Release, so it isn't replaced by Tamp's built-in Configuration. Keep it as a string parameter, or as an enum named differently: a build-declared Configuration hides Tamp's."
+                : "NUKE's Enumeration has no Tamp equivalent. Make this an enum, or a string with the allowed values checked in a target.");
+            return;
+        }
+        // Removed, so the marker goes on the members typed Configuration (ConfigurationMember), not on the class.
+        Edit(cls, _ => null);
+        Site(cls, rule, Outcome.Assisted, rule.Marker);
+    }
+
+    /// <summary>True when the migration removed every member of a file that had some (delete the file).</summary>
+    public bool EmptiedByMigration { get; private set; }
 
     private void FromPath(AttributeSyntax a, MappingRule rule)
     {
@@ -442,7 +535,7 @@ internal sealed class FileMigration
 
     // ---------------------------------------------------------------- edits, markers, sites
 
-    public void Edit(SyntaxNode original, Func<SyntaxNode, SyntaxNode> edit)
+    public void Edit(SyntaxNode original, Func<SyntaxNode, SyntaxNode?> edit)
     {
         if (!_edits.TryGetValue(original, out var list)) _edits[original] = list = [];
         list.Add(edit);
@@ -487,6 +580,7 @@ internal sealed class FileMigration
     {
         var rewritten = (CompilationUnitSyntax)new Applier(this).Visit(Root)!;
         rewritten = Usings(rewritten);
+        EmptiedByMigration = Root.Members.Count > 0 && rewritten.Members.Count == 0;
         return rewritten.ToFullString();
     }
 
@@ -498,7 +592,14 @@ internal sealed class FileMigration
             var visited = base.Visit(node);
             if (visited is null) return null;
             if (m._edits.TryGetValue(node, out var edits))
-                foreach (var edit in edits) visited = edit(visited);
+            {
+                foreach (var edit in edits)
+                {
+                    var next = edit(visited);
+                    if (next is null) return null; // the edit removed the node
+                    visited = next;
+                }
+            }
             if (m._markers.TryGetValue(node, out var lines))
                 visited = m.WithMarkers(node, visited, lines.OrderBy(l => l.Position).Select(l => l.Line));
             return visited;

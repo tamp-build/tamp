@@ -25,6 +25,9 @@ The single source of truth for converting a NUKE `Build.cs` to Tamp ([ADR 0021](
 | `public static int Main() => Execute<Build>(x => x.Default);` | `public static int Main(string[] args) => Execute<Build>(args);` | auto | NUKE picks the default target via the `Execute` arg; Tamp designates it with `.Default()` on the target (see §4). |
 | `using Nuke.Common;` / `Nuke.Common.*` | `using Tamp;` (+ per-tool `using Tamp.NetCli.V10;` etc.) | assisted | Drop `Nuke.Common.*`; add the Tamp namespaces for the wrappers actually used. |
 | `build.sh` / `build.cmd` / `.nuke/` | `tamp.sh` / `tamp.cmd` (from `tamp init`) | assisted | Regenerate the bootstrap via `dotnet tamp init`; don't port NUKE's. |
+| `class Configuration : Enumeration` (Debug/Release, from `nuke :setup`) | Tamp's built-in `Configuration` | assisted | The template class is removed (and its file, if that leaves it empty); each `Configuration` member is marked, because Tamp's is an enum: write `Configuration.ToString()` where it was used as a string. Any other `Enumeration` is marked: use an enum or a string. |
+| `protected override void OnBuildInitialized()` and the other `OnBuild*` / `OnTarget*` hooks | — | manual | `TampBuild` has no lifecycle hooks: move the code into a target that runs first, or the constructor. |
+| `Configure<DotNetPackSettings> X => _ => _...` | — | manual | Inline the setters into the `DotNet.X(s => ...)` call. |
 | `build/_build.csproj` (`Nuke.Common`, `PackageDownload`) | the same project, referencing `Tamp.Core` + the wrappers used | assisted | `tamp migrate nuke` rewrites it in place. A `PackageDownload` tool becomes a `[NuGetPackage("<id>", Version = "<v>")] Tool` field. |
 | `[UnsetVisualStudioEnvironmentVariables]` and other build-attributes | (drop) | manual | No Tamp equivalent; usually unnecessary. |
 | `[GitHubActions(...)]` / `[AzurePipelines(...)]` / other CI-generation attributes | — | manual | Tamp doesn't generate CI configuration. Keep the existing pipeline file, point it at `./tamp.sh`, and delete the attribute. |
@@ -39,7 +42,8 @@ The single source of truth for converting a NUKE `Build.cs` to Tamp ([ADR 0021](
 | `[PathVariable]` / `[PathExecutable] readonly Tool Git;` | `[FromPath("git")] readonly Tool Git;` | auto | Both resolve a tool from PATH into a `Tool`. |
 | `Git("status --short")` (calling that field) | `Git.Plan("status", "--short")` | assisted | A NUKE `Tool` is a delegate that parses one argument string; a Tamp `Tool` builds a `CommandPlan` from one argument per element, which the target must return or run (TAMP001). |
 | `[GitVersion] readonly GitVersion GitVersion;` | `Tamp.GitVersion.V6` wrapper | assisted | Add `Tamp.GitVersion.V6`; call its wrapper rather than an injected field. |
-| `[GitRepository] readonly GitRepository Repo;` | (git via `Tamp.GitHubCli.V2` / shell) | manual | No injected `GitRepository`; obtain repo facts via a git wrapper. |
+| `[GitRepository] readonly GitRepository Repo;` | `[GitRepository] readonly GitRepository Repo;` | assisted | Tamp's has `Branch`, `Commit`, `RemoteUrl`, `IsDetachedHead`; NUKE's `Tags`, `IsOnMainOrMasterBranch()`, `GetGitHubOwner()` aren't there (read them with git). |
+| `Solution.AllProjects` | `Solution.Projects` | auto | Every project, solution folders included. |
 | `IsLocalBuild` / `IsServerBuild` | `IsLocalBuild` / `IsServerBuild` | auto | Both exist on `TampBuild`. |
 | `Host is GitHubActions` / `GitHubActions.Instance` | `CiHost.Detect()` | assisted | Returns the detected CI host, or null for a local build. |
 
@@ -272,7 +276,7 @@ The sections above are what Tamp *has*. This section is the honest inverse: **NU
 | `Nuke.Components` (interface-mixin targets) | **covered** — `Tamp.Components` (ADR 0020, 1.17) | The core components map near-1:1 (§6); the others are written out. |
 | CI-configuration generation (`[GitHubActions]` etc.) | none | Keep the existing pipeline file and point it at `./tamp.sh` (§1). |
 | `[Partition]` / partitioned parallelism | **no equivalent** | `manual` — run serially, or shard outside Tamp. The single biggest hard gap. |
-| `[GitRepository]` injection | none | Obtain repo facts via `git` / `Tamp.GitHubCli.V2`; no injected object. |
+| `[GitRepository]` injection | **covered** — `[GitRepository]` (`Branch`, `Commit`, `RemoteUrl`) | NUKE's richer members (`Tags`, `IsOnMainOrMasterBranch()`) aren't there; read them with `git` (§2). |
 | Serilog-based `Log.*` | per-target captured console output | Rewrite as `Console.WriteLine` (§5). |
 | `nuke :setup` interactive wizard | `tamp init` (non-interactive scaffold) | Re-scaffold; don't port the bootstrap. |
 | ReSharper / Rider IDE plugin | VS Code extension (Fleet planned) | Different IDE surface; not a build-file concern. |

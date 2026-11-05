@@ -29,6 +29,7 @@ public sealed class MappingTests
         ["attribute"] = ["names"],
         ["invocation"] = ["names"],
         ["identifier"] = ["names"],
+        ["member"] = ["names"],
         ["using"] = ["namespace"],
         ["entrypoint"] = [],
         ["field_invocation"] = ["attributes"],

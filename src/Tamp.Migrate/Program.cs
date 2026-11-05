@@ -100,6 +100,8 @@ internal static class Program
         {
             foreach (var file in result.Files.Where(f => result.Report.ChangedFiles.Contains(f.Path)))
                 File.WriteAllText(Path.Combine(root, file.Path), file.Text);
+            foreach (var gone in result.Deleted)
+                File.Delete(Path.Combine(root, gone));
             foreach (var g in result.Generated)
             {
                 var target = Path.Combine(root, g.Path);
@@ -111,6 +113,11 @@ internal static class Program
         }
         File.WriteAllText(Path.Combine(root, "tamp-migration.json"), result.Report.ToJson());
         File.WriteAllText(Path.Combine(root, "tamp-migration.md"), result.Report.ToMarkdown());
+
+        // Quartz.NET-style forks (Fallout) or a build that's already Tamp: say so rather than report silence.
+        if (!result.Report.Sites.Any(x => x.RuleId is "boilerplate.base-class" or "boilerplate.usings"))
+            Console.Error.WriteLine($"tamp-migrate: warning: no NukeBuild class and no Nuke.* usings under {buildDir}. "
+                + "Is this a NUKE 8+ build? (Forks with their own namespaces, such as Fallout, aren't recognised.)");
 
         var s = result.Report.Summary;
         Console.WriteLine(

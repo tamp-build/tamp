@@ -8,17 +8,17 @@
   </PropertyGroup>
 
   <!--
-    ADR 0021: a separate dotnet tool, so the `tamp` tool every CI run installs doesn't carry
-    Roslyn for a one-off job. IsPackable stays false until the tool is ready to ship (project
-    generation, the verify option, the `tamp migrate nuke` forwarder); release.yml packs every packable project.
+    ADR 0021: a separate dotnet tool, so the `tamp` tool every CI run installs doesn't carry Roslyn
+    for a one-off job; `tamp migrate nuke` runs it at the CLI's own version (dotnet tool execute).
+    Ships as a preview: assisted, not automatic (docs/nuke-migration/dogfood-nswag.md).
   -->
   <PropertyGroup Label="Tool">
     <PackageId>Tamp.Migrate</PackageId>
-    <IsPackable>false</IsPackable>
+    <IsPackable>true</IsPackable>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>tamp-migrate</ToolCommandName>
     <RollForward>Major</RollForward>
-    <Description>Migrates a NUKE build to Tamp (ADR 0021). A syntactic Roslyn rewrite that applies the auto-tier rows of the NUKE-to-Tamp mapping, leaves a // TAMP-MIGRATE(rule-id) marker at every site it won't touch, and writes a coverage report. It never compiles or restores the NUKE build.</Description>
+    <Description>Preview. Migrates a NUKE 8+ build to Tamp (ADR 0021); run it as `tamp migrate nuke`. A syntactic Roslyn rewrite that applies the auto-tier rows of the NUKE-to-Tamp mapping, leaves a // TAMP-MIGRATE(rule-id) marker at every site it won't touch, and writes a coverage report. It never compiles or restores the NUKE build.</Description>
   </PropertyGroup>
 
   <ItemGroup>
