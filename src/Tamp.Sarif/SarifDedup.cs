@@ -1,3 +1,6 @@
+using System.Buffers;
+using System.Text.Json;
+
 namespace Tamp.Sarif;
 
 /// <summary>
@@ -67,11 +70,22 @@ public static class SarifDedup
     /// component or version term of its own, and relies on the producer having put component
     /// identity in <c>logicalLocations.fullyQualifiedName</c>.
     /// <para>
-    /// <strong>Attribution.</strong> The <c>seen</c> set spans runs, so when two tools both report
-    /// one finding the merged log keeps it on whichever run came first in input order and shows the
-    /// second tool reporting nothing for it. Every run survives, so "which tools ran" stays
-    /// answerable; "which tools found this" does not. For deliberately overlapping scanners that
-    /// corroboration is often the point, so use <see cref="SarifMerge.Combine"/> when it matters.
+    /// <strong>Attribution.</strong> Duplicates are collapsed across runs, so when two tools both
+    /// report one finding the merged log keeps it on whichever run came first in input order and the
+    /// other tool's run shows nothing for it. The corroboration is <em>not</em> lost: the surviving
+    /// result carries <see cref="AlsoReportedByProperty"/> naming every other tool that reported it
+    /// (tamp#156). Agreement between two independent scanners is a signal, and a finding both tools
+    /// see is worth triaging differently from one only one tool sees.
+    /// </para>
+    /// <para>
+    /// The property is written only when a <em>different</em> tool's copy was dropped. The multi-TFM
+    /// Roslyn case — the same tool reporting the same finding once per target framework — adds
+    /// nothing, because "roslyn also reported this roslyn finding" is noise.
+    /// </para>
+    /// <para>
+    /// Counts still move: there is one result per finding, not one per reporting tool. Use
+    /// <see cref="SarifMerge.Combine"/> when a consumer needs a result per tool rather than a
+    /// property listing them.
     /// </para>
     /// </remarks>
     public static SarifLog Distinct(SarifLog log) => Distinct(log, DefaultKey);
@@ -105,11 +119,42 @@ public static class SarifDedup
         if (log is null) throw new ArgumentNullException(nameof(log));
         if (keySelector is null) throw new ArgumentNullException(nameof(keySelector));
 
-        var seen = new HashSet<string>(StringComparer.Ordinal);
+        // Two passes, because corroboration is discovered after the surviving result has been
+        // chosen: the second tool to report a finding appears later in the input than the first.
+        var owner = new Dictionary<string, (int Run, int Index)>(StringComparer.Ordinal);
+        var corroborators = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+        for (var runIndex = 0; runIndex < log.Runs.Count; runIndex++)
+        {
+            var results = log.Runs[runIndex].Results;
+            if (results is null) continue;
+
+            for (var index = 0; index < results.Count; index++)
+            {
+                var key = keySelector(results[index]);
+                if (owner.TryAdd(key, (runIndex, index))) continue;
+
+                // A duplicate. Record the tool that also reported it — unless it is the same tool as
+                // the survivor's, which is the multi-TFM case this helper exists for: "roslyn also
+                // reported this roslyn finding" is noise, not corroboration.
+                var ownerTool = ToolName(log.Runs[owner[key].Run]);
+                var duplicateTool = ToolName(log.Runs[runIndex]);
+                if (string.Equals(ownerTool, duplicateTool, StringComparison.Ordinal)) continue;
+
+                if (!corroborators.TryGetValue(key, out var tools))
+                {
+                    tools = [];
+                    corroborators[key] = tools;
+                }
+                if (!tools.Contains(duplicateTool, StringComparer.Ordinal)) tools.Add(duplicateTool);
+            }
+        }
+
         var rewrittenRuns = new List<SarifRun>(log.Runs.Count);
 
-        foreach (var run in log.Runs)
+        for (var runIndex = 0; runIndex < log.Runs.Count; runIndex++)
         {
+            var run = log.Runs[runIndex];
             if (run.Results is null)
             {
                 rewrittenRuns.Add(run);
@@ -117,10 +162,15 @@ public static class SarifDedup
             }
 
             var kept = new List<SarifResult>(run.Results.Count);
-            foreach (var result in run.Results)
+            for (var index = 0; index < run.Results.Count; index++)
             {
-                if (seen.Add(keySelector(result)))
-                    kept.Add(result);
+                var result = run.Results[index];
+                var key = keySelector(result);
+                if (owner[key] != (runIndex, index)) continue;        // a later copy; dropped
+
+                kept.Add(corroborators.TryGetValue(key, out var tools)
+                    ? WithAlsoReportedBy(result, tools)
+                    : result);
             }
 
             rewrittenRuns.Add(run with { Results = kept });
@@ -128,6 +178,62 @@ public static class SarifDedup
 
         return log with { Runs = rewrittenRuns };
     }
+
+    /// <summary>
+    /// The result property naming the other tools that reported a finding, written only when a
+    /// <em>different</em> tool's copy was dropped: a JSON array of tool-driver names, in the order
+    /// they appeared in the input.
+    /// </summary>
+    /// <remarks>
+    /// This name is public contract once shipped (tamp#156). It exists because agreement between two
+    /// independent scanners is a signal, and collapsing duplicates across runs would otherwise
+    /// discard it silently — the survivor's run keeps the finding and the other tool's run shows
+    /// nothing for it, with no record that it concurred.
+    /// </remarks>
+    public const string AlsoReportedByProperty = "tamp.alsoReportedBy";
+
+    /// <summary>Copy <paramref name="result"/> with <see cref="AlsoReportedByProperty"/> attached.</summary>
+    /// <remarks>
+    /// Copies the property bag rather than mutating it: the input log's results are shared with the
+    /// caller, and a dedup pass must not edit them in place.
+    /// </remarks>
+    private static SarifResult WithAlsoReportedBy(SarifResult result, IReadOnlyList<string> tools)
+    {
+        var properties = result.Properties?.AdditionalProperties is { } existing
+            ? new Dictionary<string, JsonElement>(existing, StringComparer.Ordinal)
+            : new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+
+        properties[AlsoReportedByProperty] = JsonArrayOf(tools);
+
+        return result with
+        {
+            Properties = (result.Properties ?? new SarifPropertyBag()) with { AdditionalProperties = properties },
+        };
+    }
+
+    /// <summary>A JSON string array as a <see cref="JsonElement"/>.</summary>
+    /// <remarks>
+    /// Written with <see cref="Utf8JsonWriter"/> rather than <c>JsonSerializer.SerializeToElement</c>
+    /// on purpose: this package is source-generation-only so it stays AOT- and trimming-friendly, and
+    /// the reflection-based serialiser throws without a type-info resolver wherever that is enforced.
+    /// </remarks>
+    private static JsonElement JsonArrayOf(IReadOnlyList<string> values)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartArray();
+            foreach (var value in values) writer.WriteStringValue(value);
+            writer.WriteEndArray();
+        }
+
+        using var document = JsonDocument.Parse(buffer.WrittenMemory);
+        return document.RootElement.Clone();
+    }
+
+    /// <summary>The run's tool name, with a stable placeholder when it has none.</summary>
+    private static string ToolName(SarifRun run)
+        => string.IsNullOrEmpty(run.Tool.Driver.Name) ? "(unnamed tool)" : run.Tool.Driver.Name;
 
     /// <summary>
     /// The default dedup key:

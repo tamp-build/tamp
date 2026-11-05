@@ -8,8 +8,9 @@ namespace Tamp.Sarif;
 /// <remarks>
 /// <see cref="Combine"/> keeps every result on its own run, so the originating tool of every finding
 /// stays identifiable. <see cref="CombineDistinct(IEnumerable{SarifLog})"/> preserves the runs but
-/// not that property: a finding two tools both reported is kept on whichever run came first in input
-/// order. See its own remarks.
+/// keeps one result per finding: a finding two tools both reported stays on whichever run came first
+/// in input order, with the others named in <see cref="SarifDedup.AlsoReportedByProperty"/>. See its
+/// own remarks.
 /// </remarks>
 public static class SarifMerge
 {
@@ -77,10 +78,11 @@ public static class SarifMerge
     /// </para>
     /// <para>
     /// <strong>Attribution.</strong> Duplicates are collapsed across runs, not within them, so a
-    /// finding reported by two tools is attributed to the first run in input order and the second
-    /// tool's run shows nothing for it. Every run survives, so "which tools ran" stays answerable;
-    /// "which tools found this" does not. When corroboration between overlapping scanners is the
-    /// point, use <see cref="Combine"/>.
+    /// finding reported by two tools is kept on the first run in input order and the other tool's run
+    /// shows nothing for it. The corroboration survives as
+    /// <see cref="SarifDedup.AlsoReportedByProperty"/> on the kept result, listing every other tool
+    /// that reported it (tamp#156). What does not survive is a result per reporting tool — use
+    /// <see cref="Combine"/> when a consumer needs that rather than a property.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException">The input sequence is null.</exception>

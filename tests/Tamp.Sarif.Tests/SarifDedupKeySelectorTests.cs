@@ -188,10 +188,11 @@ public class SarifDedupKeySelectorTests
     // ─── attribution, pinned so it cannot change silently ─────────────────
 
     [Fact]
-    public void A_Finding_Two_Tools_Reported_Is_Attributed_To_The_First_Run()
+    public void A_Finding_Two_Tools_Reported_Is_Kept_On_The_First_Run()
     {
-        // Documented, not desired: tracked separately. Pinned here so a behavioural change to it is
-        // a deliberate test edit rather than a surprise.
+        // One result per finding, not one per reporting tool — that is what makes CombineDistinct
+        // useful and it has not changed. What #156 added is that the corroboration is recorded on the
+        // survivor rather than discarded; SarifDedupAttributionTests covers the property itself.
         var finding = PackageFinding("GHSA-587h-7wmj-h5pm", "vite", "5.4.21");
         var toolA = new SarifLog { Runs = [new SarifRun { Tool = new SarifTool { Driver = new SarifToolComponent { Name = "toolA" } }, Results = [finding] }] };
         var toolB = new SarifLog { Runs = [new SarifRun { Tool = new SarifTool { Driver = new SarifToolComponent { Name = "toolB" } }, Results = [finding] }] };
@@ -200,9 +201,14 @@ public class SarifDedupKeySelectorTests
 
         // Both runs survive, so "which tools ran" is answerable...
         Assert.Equal(["toolA", "toolB"], merged.Runs.Select(r => r.Tool.Driver.Name));
-        // ...but "which tools found this" is not.
+        // ...and the finding stays on the first, with toolB's copy dropped.
         Assert.Single(merged.Runs[0].Results!);
         Assert.Empty(merged.Runs[1].Results!);
+        // "which tools found this" is answerable too, from the survivor (#156).
+        Assert.Equal(
+            "toolB",
+            merged.Runs[0].Results![0].Properties!.AdditionalProperties![SarifDedup.AlsoReportedByProperty]
+                .EnumerateArray().Single().GetString());
 
         // Combine keeps the corroboration.
         var combined = SarifMerge.Combine([toolA, toolB]);

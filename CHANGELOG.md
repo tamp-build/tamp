@@ -8,17 +8,14 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
-### Fixed
-
-- **`SarifMerge.CombineDistinct` no longer documented as the general multi-tool path** ([#155](https://github.com/tamp-build/tamp/issues/155)). It was described as "the common path when stitching together SARIF from sources that re-analyse the same source per TFM (Roslyn) or scan overlapping directories (multi-tool pipelines)", and the dedup key — `(ruleId, URI, line, column, logical fullyQualifiedName)` — has no component or version term of its own. A dependency scanner reports the advisory as `ruleId`, the lockfile as the URI, the same line for every result and the affected version only in the message text, so **distinct affected versions of one package collapsed into a single result**: the defect fixed in [tamp-grype#6](https://github.com/tamp-build/tamp-grype/issues/6), re-introduced by anyone following the documentation. Measured on grype 0.112.0's native SARIF, 299 results collapse to **268**.
-
-  The guidance is now a condition rather than a category, because the key already has a slot for component identity: `CombineDistinct` is safe when the producer puts it in `logicalLocations.fullyQualifiedName`, and not when the producer puts the *path* there or omits logical locations. `Tamp.Grype` 0.2.0 puts the purl there, and the same document passes through 299 → 299.
-
-  Also documents the attribution effect: duplicates are collapsed *across* runs, so a finding two tools both reported is attributed to whichever run came first in input order. Every run survives, so "which tools ran" stays answerable; "which tools found this" does not. The class summary previously read as a stronger guarantee than `CombineDistinct` gives. Tracked for a behavioural fix in [#156](https://github.com/tamp-build/tamp/issues/156).
-
-  No live misuse existed in the fleet: the only callers are the OpenGrep + per-TFM Roslyn merge in `SecurityPipelineBuild.SecurityScan`, which is exactly the case the helper was built for. That call site now carries a comment saying why it is correct there, and why the CVE and Trivy SARIFs must not be added to it.
-
 ### Added
+- **Corroboration between two tools is recorded instead of discarded** ([#156](https://github.com/tamp-build/tamp/issues/156)). `SarifDedup.Distinct` collapses duplicates *across* runs, so a finding two tools both reported was kept on whichever run came first in input order and the other tool's run showed nothing for it — with no record that it concurred. Agreement between two independent scanners is a signal, and a finding both tools see is worth triaging differently from one only one tool sees.
+
+  The surviving result now carries **`tamp.alsoReportedBy`** (`SarifDedup.AlsoReportedByProperty`), a JSON array of the other tools' driver names in input order. Counts do not move — still one result per finding, which is what makes `CombineDistinct` useful; use `SarifMerge.Combine` when a consumer needs a result per reporting tool instead.
+
+  The property is written only when a **different** tool's copy was dropped, so the multi-TFM Roslyn case the helper exists for adds nothing: "roslyn also reported this roslyn finding" is noise, not a second opinion. An uncorroborated finding gets no property at all, which is the distinction worth having. A run whose tool has no driver name is recorded as `(unnamed tool)` rather than silently omitted.
+
+  The property name is public contract from here. Implementation note: the `JsonElement` is built with `Utf8JsonWriter` rather than `JsonSerializer.SerializeToElement`, because `Tamp.Sarif` is source-generation-only to stay AOT- and trimming-friendly and the reflection-based serialiser throws without a type-info resolver.
 
 - **`SarifDedup.Distinct(log, keySelector)` and `SarifMerge.CombineDistinct(logs, keySelector)`** ([#155](https://github.com/tamp-build/tamp/issues/155)) — a key seam, so a caller with package-level findings is not forced to choose between full dedup and none. `SarifDedup.ComputeKey` is promoted to public **`SarifDedup.DefaultKey`** so a selector can compose onto it rather than reimplement it, which is what callers usually want: `$"{SarifDedup.DefaultKey(r)}|{purl}"`.
 
@@ -26,15 +23,7 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
   **Producer fingerprints are deliberately not the default key**, even though SARIF nominates `fingerprints` / `partialFingerprints` as a result's identity — a fingerprint is only as good as the producer. grype 0.112.0's `primaryLocationLineHash` identifies the package-version rather than the finding, with 35 distinct advisories against one package version sharing a fingerprint, so the same 299 results carry just **62** distinct fingerprints. Preferring them would turn a 10% collapse into a 79% one. There is a test pinning that.
 
-### Fixed
 
-- **A skipped security scan no longer reports as a clean one** ([#151](https://github.com/tamp-build/tamp/issues/151)). `SecurityPipelineMetrics.EmitFindingsFromSarif` returned `0` when the SARIF did not exist, and `EmitComponentsFromBom` did the same for a missing BOM, so `tamp.security.scan.findings_count` emitted the same observation — nothing — for *"this scanner ran and found nothing"* and *"this scanner never ran"*. An unsettled Dependency-Track analysis likewise logged a line and let `SecurityPush` go green. In all three places an **unknown** outcome was reported as a **good** one, which is the failure direction a security control must never take.
-
-  Evidence now carries its own reliability instead of having it inferred from a count: `SecurityEvidenceStatus` is `NotRun`, `Unreadable` or `Completed`, and only the last makes a count of zero mean "looked and found nothing". New readers `ReadSarifScan`, `ReadSarifScanDirectory`, `ReadScan` and `ReadBom` return a `SecurityScanReport` / `SecuritySbomReport` saying *why* there is no result. `EmitFindingsFromSarif` and `EmitComponentsFromBom` keep their signatures and now emit the status too, so existing callers get the fix without a change.
-
-  Two new counters carry the signal `findings_count` structurally cannot: **`tamp.security.scan.status`** and **`tamp.security.sbom.status`**, tagged by tool/producer and `status`. A clean scan emits no findings point, so absence of `findings_count` was never evidence of anything — **alert on `status="not_run"`**. Counts from an unreliable read are deliberately not emitted at all.
-
-### Added
 
 - **An enforcement stage, after publication rather than before it** ([#151](https://github.com/tamp-build/tamp/issues/151)). Both publishing targets depended on the scan targets, so the natural way to add a gate — failing a scan on findings — skipped `SecurityPush` and `SecurityMetrics`, and therefore the SBOM push, the SARIF upload and the metrics, **in exactly the runs where findings existed**. Evidence arrived reliably when there was nothing to report and unreliably when there was.
 
@@ -49,7 +38,6 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 - **`SecurityPublicationStatus`** distinguishes `NotConfigured` (credentials unset — still a green outcome, as before) from `Completed`, `Incomplete` and `Failed`. An unsettled Dependency-Track analysis is now `Incomplete` and fails the gate rather than passing as a successful push.
 
 ### Changed
-
 - **`SecurityGate` fails by default when the evidence cannot be relied on** — an expected scan that did not run, an unreadable output, an absent or empty SBOM, or a publication that was attempted and did not land. This is evidence integrity, not severity policy.
 
   **This is the one behavioural change that can fail a build that used to pass.** A scanner that is not installed previously produced a skipped target, zero findings and a green build. Three ways to go green again, the first two being the honest ones: install the scanner; remove it from `SecurityExpectedScans`; or set `SecurityRequireReliableEvidence` to `false`, which keeps the receipt and the `status` metrics so the gap stays visible even though it no longer blocks. Tamp's own CI is unaffected — nothing in it invokes the aggregate `Security` target.
@@ -57,6 +45,23 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
   An SBOM that parsed but holds zero components counts as unreliable: every SCA result derived from it is *vacuously* clean, which is the most convincing kind of false negative.
 
 - **Roslyn findings emit one status point per scan rather than one per file.** The Roslyn leg writes one SARIF per (project, TFM); those are now read as a single scan, so a corrupt file among them makes the whole scan `Unreadable` rather than silently understating the surface by an unmeasurable amount. Findings totals and tag keys are unchanged — they are still summed across files, not deduplicated.
+
+### Fixed
+- **`SarifMerge.CombineDistinct` no longer documented as the general multi-tool path** ([#155](https://github.com/tamp-build/tamp/issues/155)). It was described as "the common path when stitching together SARIF from sources that re-analyse the same source per TFM (Roslyn) or scan overlapping directories (multi-tool pipelines)", and the dedup key — `(ruleId, URI, line, column, logical fullyQualifiedName)` — has no component or version term of its own. A dependency scanner reports the advisory as `ruleId`, the lockfile as the URI, the same line for every result and the affected version only in the message text, so **distinct affected versions of one package collapsed into a single result**: the defect fixed in [tamp-grype#6](https://github.com/tamp-build/tamp-grype/issues/6), re-introduced by anyone following the documentation. Measured on grype 0.112.0's native SARIF, 299 results collapse to **268**.
+
+  The guidance is now a condition rather than a category, because the key already has a slot for component identity: `CombineDistinct` is safe when the producer puts it in `logicalLocations.fullyQualifiedName`, and not when the producer puts the *path* there or omits logical locations. `Tamp.Grype` 0.2.0 puts the purl there, and the same document passes through 299 → 299.
+
+  Also documents the attribution effect: duplicates are collapsed *across* runs, so a finding two tools both reported is attributed to whichever run came first in input order. Every run survives, so "which tools ran" stays answerable; "which tools found this" does not. The class summary previously read as a stronger guarantee than `CombineDistinct` gives. The behavioural fix ships alongside — see [#156](https://github.com/tamp-build/tamp/issues/156) under Added.
+
+  No live misuse existed in the fleet: the only callers are the OpenGrep + per-TFM Roslyn merge in `SecurityPipelineBuild.SecurityScan`, which is exactly the case the helper was built for. That call site now carries a comment saying why it is correct there, and why the CVE and Trivy SARIFs must not be added to it.
+
+
+
+- **A skipped security scan no longer reports as a clean one** ([#151](https://github.com/tamp-build/tamp/issues/151)). `SecurityPipelineMetrics.EmitFindingsFromSarif` returned `0` when the SARIF did not exist, and `EmitComponentsFromBom` did the same for a missing BOM, so `tamp.security.scan.findings_count` emitted the same observation — nothing — for *"this scanner ran and found nothing"* and *"this scanner never ran"*. An unsettled Dependency-Track analysis likewise logged a line and let `SecurityPush` go green. In all three places an **unknown** outcome was reported as a **good** one, which is the failure direction a security control must never take.
+
+  Evidence now carries its own reliability instead of having it inferred from a count: `SecurityEvidenceStatus` is `NotRun`, `Unreadable` or `Completed`, and only the last makes a count of zero mean "looked and found nothing". New readers `ReadSarifScan`, `ReadSarifScanDirectory`, `ReadScan` and `ReadBom` return a `SecurityScanReport` / `SecuritySbomReport` saying *why* there is no result. `EmitFindingsFromSarif` and `EmitComponentsFromBom` keep their signatures and now emit the status too, so existing callers get the fix without a change.
+
+  Two new counters carry the signal `findings_count` structurally cannot: **`tamp.security.scan.status`** and **`tamp.security.sbom.status`**, tagged by tool/producer and `status`. A clean scan emits no findings point, so absence of `findings_count` was never evidence of anything — **alert on `status="not_run"`**. Counts from an unreliable read are deliberately not emitted at all.
 
 ## [1.19.0] — 2026-11-04 — `tamp migrate nuke` (preview); PATH, regex and reliability hardening
 
