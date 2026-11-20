@@ -1,0 +1,14 @@
+{
+  "name": "nuget-trusted-publishing",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Create nuget.org Trusted Publishing policies for tamp-build repos by driving an already-signed-in Chrome over CDP. nuget.org exposes no API for this.",
+  "scripts": {
+    "list": "node list.mjs",
+    "dry-run": "node create.mjs --file repos-unconverted.txt --dry-run"
+  },
+  "dependencies": {
+    "playwright-core": "1.56.1"
+  }
+}

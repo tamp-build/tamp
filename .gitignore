@@ -47,3 +47,6 @@ Thumbs.db
 
 # Local MCP config (interagent bearer lives in $INTERAGENT_TOKEN, not here)
 .mcp.json
+
+# Node tooling under tools/ (nuget-trusted-publishing)
+node_modules/
