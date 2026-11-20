@@ -8,6 +8,30 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+## [1.20.1] - 2026-11-20 - The SARIF default-severity fix, for consumers still on .NET 8 or .NET 9
+
+Patch release off the `v1.20.0` tag. It carries **only** the [#166](https://github.com/tamp-build/tamp/issues/166) fix and still targets `net8.0;net9.0;net10.0`, for consumers who cannot move to 1.21.0 because that release drops both EOL frameworks.
+
+### Fixed
+
+- **A finding whose scanner omitted `level` was recorded as benign** ([#166](https://github.com/tamp-build/tamp/issues/166)). `Tamp.Sarif`'s schema records declare their defaults as property initializers — `SarifLevel Level { get; init; } = SarifLevel.Warning`, and eleven others. An initializer like that is only honoured if the deserializer leaves absent JSON members alone. .NET 11's `System.Text.Json` source generator does; **every earlier runtime overwrites the member with `default(T)`**.
+
+  `default(SarifLevel)` is `None`. So on net8, net9 and net10 — every runtime this release line runs on — a result whose scanner legally omitted `level` was read as the *least* severe value where the declared default was `Warning`. Omitting it is legal: SARIF 2.1.0 §3.27.10 defers to the rule's `defaultConfiguration`, which itself defaults to `warning`. The value then round-tripped, so Tamp **wrote `"level": "none"` back into the evidence file**, and `SecurityPipelineMetrics.LevelToTag` tags the metric a gate reads from it — a finding of unknown severity sat below any "warning and above" threshold, recorded as benign. `log.Runs[0]` on a log with no `runs` threw an NRE for the same reason.
+
+  Every declared default is now written into the document by `SarifReader` before deserialization, so no default depends on the runtime. Only an **absent** member is filled: an explicit `"level": "none"` is a deliberate statement by the scanner and is preserved exactly.
+
+### Notes for anyone comparing this with 1.21.0
+
+- **This is a re-implementation, not a backport.** 1.21.0 enforces each default in the property accessor over a readonly backing field, exposing the raw nullable under the wire name with `[JsonIgnore]` on the resolved property. That shape **cannot run on net8 or net9 at all**: `[JsonIgnore]` on a property with an `init` accessor makes the .NET 8/9 JSON source generator emit a parameterized-constructor deserialization path, which throws `ConstructorParameterIncompleteBinding` on every parse and makes `SarifResult` entirely undeserializable. Since this line exists precisely to serve net8/net9, the fix had to be built differently.
+
+- **The public API is unchanged from 1.20.0.** `Level` remains a settable `SarifLevel` named `level`, so a satellite that constructs SARIF (`Tamp.McpScanner`, `Tamp.AxeCore`) still compiles. There is no new `LevelRaw` member on this line.
+
+- **One behavioural difference from 1.21.0.** 1.21.0 preserves the distinction between "level absent" and "level explicitly warning" across a round trip; this release does not — an absent level is materialised as `"warning"` and written back that way. Per SARIF 2.1.0 §3.27.10 the two are semantically the same claim, and it is in any case strictly better than the `"none"` 1.20.0 writes.
+
+- **A log with no `$schema` is now tagged** with `SarifLog.CanonicalSchema` on write, applied in `SarifWriter` rather than as a property default for the same reason as above. An explicit `$schema` is preserved.
+
+**Upgrading is still the better move where you can.** This release freezes you on frameworks Microsoft stopped supporting on 2026-11-10; it fixes the severity bug but nothing after it. ADR 0015 is amended to record what a stranded pin costs: it freezes the consumer's bugs along with their runtime.
+
 ## [1.20.0] - 2026-11-05 - Security staging, SARIF dedup identity, and release notes that reach people
 
 ### Added

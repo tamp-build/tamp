@@ -2,7 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # release/** so a patch release off an old tag gets a CI run. The release
+    # workflow refuses to publish a commit CI has not passed, and without this
+    # a release branch produces no run at all, so that guard times out and the
+    # release fails having refused to publish unverified (tamp#166 / 1.20.1).
+    branches: [main, 'release/**']
   pull_request:
     branches: [main]
   workflow_dispatch:

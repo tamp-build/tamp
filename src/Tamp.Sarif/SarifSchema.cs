@@ -7,6 +7,13 @@ namespace Tamp.Sarif;
 /// </summary>
 public sealed record SarifLog
 {
+    /// <summary>
+    /// The canonical SARIF 2.1.0 schema URI. Applied by <see cref="SarifWriter"/> on the way out
+    /// rather than as a property default, because a property default is overwritten on
+    /// deserialization by every runtime before net11 (tamp#166).
+    /// </summary>
+    public const string CanonicalSchema = "https://json.schemastore.org/sarif-2.1.0.json";
+
     public string Version { get; init; } = "2.1.0";
 
     [JsonPropertyName("$schema")]
