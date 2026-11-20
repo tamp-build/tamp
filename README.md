@@ -165,7 +165,7 @@ Tamp.{ToolFamily}.{TargetVersion?}
 - **`{ToolFamily}`** — what's wrapped: `Core`, `NetCli`, `Docker`, `Sonar`, `Yarn`, `Kubectl`, ...
 - **`{TargetVersion}`** — `V{major}` of the wrapped tool, ONLY when the tool's CLI surface breaks across majors (`Tamp.NetCli.V10`, `Tamp.Docker.V27`). Stable-surface tools ship without a version suffix (`Tamp.Yarn`, `Tamp.Kubectl`).
 
-The NuGet semver field tracks the *plugin's own* evolution within that line — so `Tamp.NetCli.V10` 1.0.0 → 1.0.1 → 1.1.0 → 2.0.0 are all wrappers for .NET 10; when .NET 11 ships, a new package `Tamp.NetCli.V11` starts at its own 1.0.0.
+The NuGet semver field tracks the *plugin's own* evolution within that line — so `Tamp.NetCli.V10` 1.0.0 → 1.0.1 → 1.1.0 → 2.0.0 are all wrappers for .NET 10; when .NET 11 shipped, a new package `Tamp.NetCli.V11` started at its own 1.0.0.
 
 Full rationale: [ADR 0002 — Package naming convention](docs/adr/0002-package-naming-convention.md).
 
@@ -186,7 +186,7 @@ The wiki's **[Module Catalog](https://github.com/tamp-build/tamp/wiki/Module-Cat
 - **Attestation + provenance** — `Tamp.GitHubAttest` (`gh attestation` + cosign keyless artifact signing / verification)
 - **Observability + notifications** — `Tamp.Telemetry` (OTel emit-side bridge), `Tamp.Telegram` (`IBuildReporter` → Telegram Bot API; Slack + Discord siblings planned), `Tamp.Ingest.V1` (typed client for the `tamp-ingest-v1` egress contract)
 - **Source control + tracking** — `Tamp.GitHubCli.V2`, `Tamp.YouTrack`
-- **Reusable build components** — `Tamp.Components` ([ADR 0020](docs/adr/0020-tamp-components.md)): tool-agnostic target-shape interfaces (`IRestore` / `ICompile` / `ITest` / `IPack`) plus the `IHaz*` injection contracts (`IHazSolution` / `IHazConfiguration` / `IHazArtifacts`); concrete tool bodies ship as `Tamp.Components.NetCli.V8/9/10`. Compose a standard build with `class Build : TampBuild, ICompile, ITest, IPack`. (Tamp's answer to `Nuke.Components`.)
+- **Reusable build components** — `Tamp.Components` ([ADR 0020](docs/adr/0020-tamp-components.md)): tool-agnostic target-shape interfaces (`IRestore` / `ICompile` / `ITest` / `IPack`) plus the `IHaz*` injection contracts (`IHazSolution` / `IHazConfiguration` / `IHazArtifacts`); concrete tool bodies ship as `Tamp.Components.NetCli.V10` and `Tamp.Components.NetCli.V11`. Compose a standard build with `class Build : TampBuild, ICompile, ITest, IPack`. (Tamp's answer to `Nuke.Components`.)
 - **Foundation** — `Tamp.Http`, `Tamp.Sarif`, `Tamp.Sbom`, `Tamp.Templates.AspNet`
 - **Editor integration** — **[Tamp for VS Code](https://github.com/tamp-build/tamp-vscode)** (`.vsix` sideload from the repo's GitHub Releases; activity-bar targets tree, Run / Dry Run / View Plan, CodeLens, hover docs, run history)
 
@@ -220,15 +220,15 @@ If you build a different consumer (a defect tracker, an evidence vault, a CI ins
 
 Tamp's first-party assemblies (`Tamp.Core`, `Tamp.Cli`, every `Tamp.NetCli.V{N}`, every satellite) multi-target every .NET release Microsoft considers in support — both LTS and STS. We track [Microsoft's support calendar](https://dotnet.microsoft.com/en-us/platform/support/policy/dotnet-core) exactly: a TFM gets added the day a new release ships, dropped the day Microsoft EOLs it.
 
-Today: `net8.0;net9.0;net10.0`. Full rationale incl. the federal / regulated VDI consumer cohort: [ADR 0015 — Target framework strategy](docs/adr/0015-target-framework-strategy.md).
+Today: `net10.0;net11.0` (.NET 11 shipped 2026-11-10; .NET 8 and .NET 9 reached EOL the same day). Full rationale incl. the federal / regulated VDI consumer cohort: [ADR 0015 — Target framework strategy](docs/adr/0015-target-framework-strategy.md).
 
 ---
 
 ## Roadmap
 
-**v0 — Walking skeleton.** Shipped 2026-05. Executor, parameter injection, `CommandPlan` dry-run, `Secret` type, host detection, `Tamp.Cli` + `dotnet-tamp`, `Tamp.NetCli.V8/V9/V10`. Tamp self-hosts.
+**v0 — Walking skeleton.** Shipped 2026-05. Executor, parameter injection, `CommandPlan` dry-run, `Secret` type, host detection, `Tamp.Cli` + `dotnet-tamp`, `Tamp.NetCli.V8/V9/V10` (`V11` added 2026-11). Tamp self-hosts.
 
-**v1 — Real-world coverage.** Shipped 2026-05. `Tamp.Core` API frozen for satellite pinning. `Tamp.*` NuGet prefix confirmed reserved. Tier-1 .NET + container + JS + supply-chain satellites all live. 3-OS × 3-TFM CI matrix on every satellite. Release workflow refuses to publish if the commit's CI hasn't passed.
+**v1 — Real-world coverage.** Shipped 2026-05. `Tamp.Core` API frozen for satellite pinning. `Tamp.*` NuGet prefix confirmed reserved. Tier-1 .NET + container + JS + supply-chain satellites all live. 3-OS × multi-TFM CI matrix on every satellite. Release workflow refuses to publish if the commit's CI hasn't passed.
 
 **v1.x — Ecosystem fill.** Shipped. ADR backfill (0001–0018), per-satellite wiki pages, [migration guides from NUKE and Cake](https://github.com/tamp-build/tamp/wiki/Migrating-From-NUKE), the security chain, the VS Code extension, `tamp-beacon` + `tamp-findings`. Additional wrappers continue to land as adopters ask.
 
@@ -276,7 +276,7 @@ License: MIT — see [LICENSE](LICENSE) and [ADR 0007](docs/adr/0007-license-mit
 > GitHub-side assignment failure, not a workflow problem — and it was reporting as a red check on
 > pull requests that were otherwise green.
 >
-> **Linux and Windows CI are unchanged**, and the build still targets net8.0, net9.0 and net10.0 on
+> **Linux and Windows CI are unchanged**, and the build still targets net10.0 and net11.0 on
 > both. macOS remains a supported runtime for this package; what is paused is the CI leg that
 > verifies it, which means a macOS-specific regression could land unnoticed while this is in effect.
 >

@@ -10,21 +10,23 @@ Thanks for considering a contribution. Tamp is small enough that one maintainer 
 
 ## Getting set up
 
-Tamp targets [.NET 8, 9, and 10](docs/adr/0015-target-framework-strategy.md) — every assembly multi-targets all three. You need all three SDKs installed locally to run the full test matrix.
+Tamp targets [.NET 10 and .NET 11](docs/adr/0015-target-framework-strategy.md) — every assembly multi-targets both. You need both SDKs installed locally to run the full test matrix.
+
+`global.json` pins the **.NET 11 SDK** (`11.0.100`), and that pin is not optional: SDK 10 cannot target `net11.0`, and `rollForward: latestFeature` will not cross a major version. Without SDK 11 the build fails outright rather than silently building one TFM. SDK 10 is still needed because `build/Build.csproj` and `tools/` target `net10.0` and need that runtime to *run*.
 
 ```bash
 # macOS — Microsoft pkg installers via Homebrew
-brew install --cask dotnet-sdk@8 dotnet-sdk@9 dotnet-sdk
+brew install --cask dotnet-sdk@10 dotnet-sdk
 
 # Linux — Microsoft package feed (see https://learn.microsoft.com/dotnet/core/install/linux)
-# Windows — winget install Microsoft.DotNet.SDK.8 / .9 / .10
+# Windows — winget install Microsoft.DotNet.SDK.10 / Microsoft.DotNet.SDK.11
 ```
 
 Verify:
 
 ```bash
 dotnet --list-sdks
-# 8.0.x, 9.0.x, 10.0.x
+# 10.0.x, 11.0.x
 ```
 
 Then:
@@ -37,7 +39,7 @@ dotnet build Tamp.slnx
 dotnet test Tamp.slnx
 ```
 
-A clean build is zero warnings, zero errors, every test green across all three TFMs. CI enforces this on every PR.
+A clean build is zero warnings, zero errors, every test green across both TFMs (`net10.0`, `net11.0`). CI enforces this on every PR.
 
 ## Repository layout
 

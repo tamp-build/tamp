@@ -19,7 +19,7 @@ public sealed class BuildScaffolderTests
 
           <PropertyGroup>
             <OutputType>Exe</OutputType>
-            <TargetFramework>net8.0</TargetFramework>
+            <TargetFramework>net10.0</TargetFramework>
             <RootNamespace></RootNamespace>
             <NoWarn>CS0649;CS0169;CA1050;CA1822;CA2211;IDE1006</NoWarn>
             <NukeRootDirectory>..</NukeRootDirectory>
@@ -46,7 +46,7 @@ public sealed class BuildScaffolderTests
 
           <PropertyGroup>
             <OutputType>Exe</OutputType>
-            <TargetFramework>net8.0</TargetFramework>
+            <TargetFramework>net10.0</TargetFramework>
             <RootNamespace></RootNamespace>
             <NoWarn>CS0649;CS0169;CA1050;CA1822;CA2211;IDE1006</NoWarn>
             <IsPackable>false</IsPackable>
@@ -81,11 +81,11 @@ public sealed class BuildScaffolderTests
     [Fact]
     public void A_Project_With_No_Package_References_Gets_A_New_Item_Group()
     {
-        var bare = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <TargetFramework>net9.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n";
+        var bare = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <TargetFramework>net11.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n";
         var (result, _) = Run(new() { ["build/_build.csproj"] = bare }, cs: "class Build : NukeBuild { }\n");
 
         Assert.Equal(
-            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <TargetFramework>net9.0</TargetFramework>\n  </PropertyGroup>\n"
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <TargetFramework>net11.0</TargetFramework>\n  </PropertyGroup>\n"
             + "  <ItemGroup>\n    <PackageReference Include=\"Tamp.Core\" Version=\"1.19.0\" />\n  </ItemGroup>\n</Project>\n",
             Assert.Single(result.Generated, g => g.Path == "build/_build.csproj").Text);
     }
@@ -93,7 +93,7 @@ public sealed class BuildScaffolderTests
     [Fact]
     public void An_Unsupported_Target_Framework_Moves_To_Net10_And_Says_So()
     {
-        var (result, _) = Run(new() { ["build/_build.csproj"] = NukeCsproj.Replace("net8.0", "net6.0", StringComparison.Ordinal) });
+        var (result, _) = Run(new() { ["build/_build.csproj"] = NukeCsproj.Replace("net10.0", "net6.0", StringComparison.Ordinal) });
 
         Assert.Contains("<TargetFramework>net10.0</TargetFramework>", Assert.Single(result.Generated, g => g.Path == "build/_build.csproj").Text, StringComparison.Ordinal);
         Assert.Contains("TargetFramework net6.0 -> net10.0", Assert.Single(result.Report.Sites, s => s.RuleId == "boilerplate.build-project").Marker);

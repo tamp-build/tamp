@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
+    <RootNamespace>Tamp.NetCli.V11</RootNamespace>
+    <AssemblyName>Tamp.NetCli.V11</AssemblyName>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Package">
+    <PackageId>Tamp.NetCli.V11</PackageId>
+    <Description>Tamp wrapper for the .NET 11 SDK CLI (`dotnet build`, `test`, `pack`, `publish`, `restore`, ...). Pinned to .NET 11's CLI surface; sibling packages exist for other supported majors.</Description>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Tamp.Core\Tamp.Core.csproj" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+  </ItemGroup>
+
+</Project>

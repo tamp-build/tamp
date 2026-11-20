@@ -22,7 +22,7 @@ public sealed record GeneratedFile(string Path, string Text, bool Created, bool 
 internal sealed class BuildScaffolder(
     MigrationMapping mapping, MigrationOptions options, IReadOnlyList<string> repositoryFiles, Func<string, string?> readFile)
 {
-    private static readonly string[] SupportedFrameworks = ["net8.0", "net9.0", "net10.0"];
+    private static readonly string[] SupportedFrameworks = ["net10.0", "net11.0"];
 
     public List<GeneratedFile> Generated { get; } = [];
     public List<MigrationSite> Sites { get; } = [];
@@ -86,12 +86,12 @@ internal sealed class BuildScaffolder(
         foreach (var p in project.Elements("PropertyGroup").Elements().Where(e => e.Name.LocalName.StartsWith("Nuke", StringComparison.Ordinal)).ToList())
             Remove(p);
 
-        // Tamp.Core supports net8.0 / net9.0 / net10.0.
+        // Tamp.Core supports net10.0 / net11.0 (ADR 0015 — net8.0/net9.0 dropped at EOL 2026-11-10).
         foreach (var tfm in project.Elements("PropertyGroup").Elements("TargetFramework"))
         {
             if (!SupportedFrameworks.Contains(tfm.Value.Trim(), StringComparer.OrdinalIgnoreCase))
             {
-                notes.Add($"TargetFramework {tfm.Value.Trim()} -> net10.0 (Tamp.Core targets net8.0/net9.0/net10.0)");
+                notes.Add($"TargetFramework {tfm.Value.Trim()} -> net10.0 (Tamp.Core targets net10.0/net11.0)");
                 tfm.Value = "net10.0";
             }
         }
