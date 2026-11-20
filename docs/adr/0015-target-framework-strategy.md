@@ -1,9 +1,17 @@
 # ADR 0015: Target framework strategy
 
-* Status: Accepted
+* Status: Accepted — **amended 2026-11-20** (see [Amendment](#amendment--2026-11-20-net-11-added-net-8--net-9-dropped))
 * Date: 2026-05-09
 * Deciders: scott
 * Tracking: TAM-21 (ADR), TAM-32 (work item)
+* Amended by: tamp#166 / Tamp 1.21.0 — the first calendar turn executed under this rule
+
+> **Note (2026-11-20):** the rule below has now fired for the first time. .NET 11
+> shipped on 2026-11-10 and .NET 8 and .NET 9 reached EOL the same day, so the TFM
+> list is **`net10.0;net11.0`** as of Tamp **1.21.0**, and `Tamp.NetCli.V11` /
+> `Tamp.Components.NetCli.V11` exist. The body below is the 2026-05-09 record and
+> still states the old list; see the [Amendment](#amendment--2026-11-20-net-11-added-net-8--net-9-dropped) for what shipped and for
+> the one consequence the original write-up got wrong.
 
 ## Context and Problem Statement
 
@@ -124,9 +132,77 @@ The rule says "Microsoft considers in support." We define that, for purposes of 
 * Con: the consumer running an EOL runtime is, by Microsoft's definition, accepting unsupported risk; we should not be the safety net.
 * Con: nobody asked for this.
 
+## Amendment — 2026-11-20 (tamp#166): .NET 11 added, .NET 8 + .NET 9 dropped
+
+The first execution of this ADR's rule, and the first chance to check it against
+reality. Recorded here because one consequence in the original write-up turned out
+to be wrong in a way that matters.
+
+### What shipped (Tamp 1.21.0)
+
+* Every first-party assembly now multi-targets **`net10.0;net11.0`**. The
+  three-TFM line in the body above is historical.
+* `global.json` pins SDK **11.0.100**. This is load-bearing, not cosmetic: SDK 10
+  cannot target `net11.0`, and `rollForward: latestFeature` will not cross a major
+  version, so an unpinned or 10-pinned environment fails the build outright rather
+  than quietly producing a net10-only package.
+* **`Tamp.NetCli.V11`** and **`Tamp.Components.NetCli.V11`** were added, per the
+  "appears the day .NET 11 ships" consequence. The second one is not mandated by
+  this ADR but follows from it: a consumer whose build script targets `net11.0`
+  and composes via `Tamp.Components` needs a body that drives the `dotnet 11`
+  CLI, and `Tamp.Components.NetCli.V10` drives SDK 10, which cannot build
+  `net11.0` projects.
+* **`Tamp.NetCli.V8` and `Tamp.NetCli.V9` were retargeted, not retired** — exactly
+  as the TFM-lifecycle-vs-module-lifecycle section requires. Both packages still
+  wrap the `dotnet 8` / `dotnet 9` CLI; their own assemblies simply load on
+  `net10.0` / `net11.0` now. Nothing about EOL changed which CLI they drive.
+* Tamp's own `build/Build.csproj` stays single-target `net10.0` (the LTS runtime)
+  but now references `Tamp.NetCli.V11`, because the SDK in `global.json` is the
+  one it actually drives.
+
+### How much of this was mechanical
+
+Worth recording, because it validates the "zero judgement calls" claim in Option 3.
+Across the whole ecosystem at the moment of the turn: **167 projects** carrying
+exactly one TFM string with no deviants, **69 identical `global.json` pins**, and
+**zero** `#if NET8_0`-style conditionals or TFM-conditioned `PackageReference`
+entries. The `#if NET10_0_OR_GREATER` guard the Consequences section budgeted for
+was never actually needed. Central package management (ADR 0006) is why.
+
+### The consequence this ADR got wrong
+
+The Consequences section describes a **"ghost window"** — a consumer stranded on an
+EOL runtime pins an older Tamp release and carries on — and treats that as an
+acceptable, essentially safe outcome. It is not safe, and the migration proved it
+by accident.
+
+.NET 11's `System.Text.Json` source generator changed one behaviour: a non-nullable
+property with an initializer is only honoured if the serializer leaves absent JSON
+members alone. net11 leaves them alone. **Every earlier runtime overwrites the
+member with `default(T)`.** `Tamp.Sarif`'s schema records relied on those
+initializers, and `default(SarifLevel)` is `None` — the *least* severe value, where
+the declared default was `Warning`. So on net8 / net9 / net10, a SARIF result whose
+scanner legally omitted `level` (SARIF 2.1.0 §3.27.10 defers to the rule's
+`defaultConfiguration`, which itself defaults to `warning`) was read as `None` and
+**written back into the evidence file as `"level": "none"`** — unknown severity
+recorded as benign, below any "warning and above" gate threshold. Eleven other
+non-nullable properties could come back null the same way. See tamp#166.
+
+The fix is in 1.21.0, which net8/net9 consumers cannot install. The lesson for this
+ADR is narrow and worth stating: **a ghost-window pin freezes the consumer's bugs
+along with their runtime.** Runtime-dependent behaviour means the last release a
+stranded cohort can install is also the release whose defects they keep forever.
+Dropping an EOL TFM is still right; assuming the stranded consumer is therefore
+*fine* is not. When a TFM drop coincides with a correctness fix that the dropped
+cohort cannot receive, the drop release should say so explicitly in its CHANGELOG,
+and a patch on the last supporting line should at least be considered on the merits
+rather than ruled out by Option 4 — Option 4 rejects *extended support*, which is
+an ongoing commitment, not a single correctness patch.
+
 ## Links
 
 * Tracker: TAM-21 (ADR), TAM-32 (work item).
 * Microsoft .NET support policy: `https://dotnet.microsoft.com/en-us/platform/support/policy/dotnet-core` (canonical source for the calendar).
+* First calendar turn under this rule: [tamp#166](https://github.com/tamp-build/tamp/issues/166) (Tamp 1.21.0) — see the Amendment above.
 * Package naming: ADR 0002 — separately governs `Tamp.NetCli.V{N}` package boundaries.
 * Repo layout: ADR 0006 — central package management already in place to make TFM additions a one-file edit.

@@ -22,6 +22,7 @@
     <Project Path="src/Tamp.NetCli.V8/Tamp.NetCli.V8.csproj" />
     <Project Path="src/Tamp.NetCli.V9/Tamp.NetCli.V9.csproj" />
     <Project Path="src/Tamp.NetCli.V10/Tamp.NetCli.V10.csproj" />
+    <Project Path="src/Tamp.NetCli.V11/Tamp.NetCli.V11.csproj" />
     <Project Path="src/Tamp.DotNetCoverage.V18/Tamp.DotNetCoverage.V18.csproj" />
     <Project Path="src/Tamp.Analyzers/Tamp.Analyzers.csproj" />
     <Project Path="src/Tamp.Sarif/Tamp.Sarif.csproj" />
@@ -29,6 +30,7 @@
     <Project Path="src/Tamp.Security.Pipeline/Tamp.Security.Pipeline.csproj" />
     <Project Path="src/Tamp.Components/Tamp.Components.csproj" />
     <Project Path="src/Tamp.Components.NetCli.V10/Tamp.Components.NetCli.V10.csproj" />
+    <Project Path="src/Tamp.Components.NetCli.V11/Tamp.Components.NetCli.V11.csproj" />
     <Project Path="src/Tamp.Migrate/Tamp.Migrate.csproj" />
   </Folder>
   <Folder Name="/build/">
@@ -40,6 +42,7 @@
     <Project Path="tests/Tamp.NetCli.V8.Tests/Tamp.NetCli.V8.Tests.csproj" />
     <Project Path="tests/Tamp.NetCli.V9.Tests/Tamp.NetCli.V9.Tests.csproj" />
     <Project Path="tests/Tamp.NetCli.V10.Tests/Tamp.NetCli.V10.Tests.csproj" />
+    <Project Path="tests/Tamp.NetCli.V11.Tests/Tamp.NetCli.V11.Tests.csproj" />
     <Project Path="tests/Tamp.DotNetCoverage.V18.Tests/Tamp.DotNetCoverage.V18.Tests.csproj" />
     <Project Path="tests/Tamp.Analyzers.Tests/Tamp.Analyzers.Tests.csproj" />
     <Project Path="tests/Tamp.Sarif.Tests/Tamp.Sarif.Tests.csproj" />
@@ -47,6 +50,7 @@
     <Project Path="tests/Tamp.Security.Pipeline.Tests/Tamp.Security.Pipeline.Tests.csproj" />
     <Project Path="tests/Tamp.Components.Tests/Tamp.Components.Tests.csproj" />
     <Project Path="tests/Tamp.Components.NetCli.V10.Tests/Tamp.Components.NetCli.V10.Tests.csproj" />
+    <Project Path="tests/Tamp.Components.NetCli.V11.Tests/Tamp.Components.NetCli.V11.Tests.csproj" />
     <Project Path="tests/Tamp.Migrate.Tests/Tamp.Migrate.Tests.csproj" />
   </Folder>
 </Solution>

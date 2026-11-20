@@ -4,11 +4,14 @@
     Tamp's self-hosted build script. Drives the project's own
     restore / build / test / pack flow via the framework being
     built. Single-target net10 (only place we don't multi-target —
-    the build script just runs on whichever .NET 10 SDK is local).
+    the build script runs on the LTS runtime, and the SDK pinned in
+    global.json builds it regardless of which runtime it targets).
     IsPackable=false; the build script is never published.
 
     ProjectReferences (not PackageReferences) wire to the in-tree
-    Tamp.Core and Tamp.NetCli.V10. That means a change to either
+    Tamp.Core and Tamp.NetCli.V11 — V11 because global.json pins the
+    .NET 11 SDK, and that is the CLI this script actually drives.
+    That means a change to either
     flows through to the next `dotnet run` of this project
     without a republish round-trip.
   -->
@@ -29,7 +32,7 @@
          that orchestrates the chain, with PackageReferences to the satellite-shipped
          scanners. -->
     <ProjectReference Include="..\src\Tamp.Core\Tamp.Core.csproj" />
-    <ProjectReference Include="..\src\Tamp.NetCli.V10\Tamp.NetCli.V10.csproj" />
+    <ProjectReference Include="..\src\Tamp.NetCli.V11\Tamp.NetCli.V11.csproj" />
     <ProjectReference Include="..\src\Tamp.DotNetCoverage.V18\Tamp.DotNetCoverage.V18.csproj" />
     <ProjectReference Include="..\src\Tamp.Sarif\Tamp.Sarif.csproj" />
     <ProjectReference Include="..\src\Tamp.Sbom\Tamp.Sbom.csproj" />

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
+    <RootNamespace>Tamp.Components.NetCli.V11</RootNamespace>
+    <AssemblyName>Tamp.Components.NetCli.V11</AssemblyName>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Package">
+    <PackageId>Tamp.Components.NetCli.V11</PackageId>
+    <Description>Concrete dotnet SDK bodies for the Tamp.Components target shapes (ADR 0020): IDotNetRestore / IDotNetCompile / IDotNetTest / IDotNetPack provide the Restore/Compile/Test/Pack CommandPlans via the .NET 11 `dotnet` CLI (Tamp.NetCli.V11), bundling current best practice (no-restore/no-build chaining, --blame-crash on test). Compose a standard build with `class Build : TampBuild, IDotNetTest, IDotNetPack` and satisfy the IHaz* contracts.</Description>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Tamp.Components\Tamp.Components.csproj" />
+    <ProjectReference Include="..\Tamp.NetCli.V11\Tamp.NetCli.V11.csproj" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+  </ItemGroup>
+
+</Project>

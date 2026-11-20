@@ -2,7 +2,7 @@ using Tamp;
 using Tamp.CycloneDx.V6;
 using Tamp.DotNetCoverage.V18;
 using Tamp.Grype;
-using Tamp.NetCli.V10;
+using Tamp.NetCli.V11;
 using Tamp.OpenGrep;
 using Tamp.Security.Pipeline;
 using Tamp.SonarScanner.V10;

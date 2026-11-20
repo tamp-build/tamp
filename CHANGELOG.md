@@ -8,7 +8,39 @@ Pre-1.0 versions may break public API freely between minor versions; the `0.x` l
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-11-20 - .NET 11 in, .NET 8 and .NET 9 out — and the SARIF default-severity bug the move exposed
+
+### Changed
+
+- **Every first-party assembly now multi-targets `net10.0;net11.0`** ([ADR 0015](docs/adr/0015-target-framework-strategy.md)). .NET 11 shipped on 2026-11-10; .NET 8 and .NET 9 reached end of support the same day. ADR 0015's rule is to add a TFM the day a release ships and drop one the day Microsoft ends its support, so this is that rule firing for the first time rather than a judgement call.
+
+  `global.json` pins SDK **11.0.100**. That pin is load-bearing: SDK 10 cannot target `net11.0`, and `rollForward: latestFeature` will not cross a major version, so an environment without SDK 11 fails the build outright instead of quietly producing net10-only packages.
+
+  **If you target `net8.0` or `net9.0`, stay on 1.20.0** — 1.21.0 carries no assets your project can resolve, and restoring it fails with NU1202 rather than falling back. Please read the next entry before you do: 1.20.0 is also the last release carrying a SARIF severity bug, and it is a security-relevant one.
+
+- **`Tamp.NetCli.V8` and `Tamp.NetCli.V9` are retargeted, not retired.** Their assemblies now load on `net10.0` / `net11.0`, and they still wrap the `dotnet 8` and `dotnet 9` CLIs exactly as before. Which runtime a wrapper *runs on* and which CLI it *drives* are independent axes (ADR 0015), and locked-down environments keep older SDKs installed for years past EOL. Nothing about these packages' purpose changed.
+
+- **`SARIF`: an absent `level` now reads as `Warning` on every target framework, instead of `None` on some of them** ([#166](https://github.com/tamp-build/tamp/issues/166)). This is a **behaviour change with security consequences**, and the reason it surfaced now is worth stating.
+
+  `Tamp.Sarif`'s schema records are records with non-nullable properties carrying initializers — `SarifLevel Level { get; init; } = SarifLevel.Warning`, and eleven others. A property initializer like that is only honoured if the deserializer leaves absent JSON members alone. **.NET 11's `System.Text.Json` source generator leaves them alone. Every earlier runtime overwrites the member with `default(T)`.** `default(SarifLevel)` is `None`.
+
+  So on net8, net9 and net10 — every runtime Tamp has ever shipped on — a SARIF result whose scanner omitted `level` was read as `SarifLevel.None`, the *least* severe value, where the declared default was `Warning`. Omitting it is legal: SARIF 2.1.0 §3.27.10 defers to the rule's `defaultConfiguration`, which itself defaults to `warning`. And because the value then round-tripped, Tamp **wrote `"level": "none"` back into the evidence file** — a finding of unknown severity recorded as benign. `SecurityPipelineMetrics.LevelToTag` tags the metric a gate reads from that value, so such a finding sat below any "warning and above" threshold. The other initialized properties could come back null the same way; `log.Runs[0]` on a log with no `runs` member threw a `NullReferenceException`.
+
+  Fixed by enforcing each declared default in the accessor rather than trusting the runtime: readonly backing fields with coercing `init` accessors. Deliberate choices inside that fix —
+
+  - Coercion is **null-only**, not `IsNullOrEmpty`. `SarifMerge.Combine` picks the first non-empty `Version` / `Schema` across logs, which requires `new SarifLog { Version = "" }` to stay expressible.
+  - `Level` keeps a nullable **`LevelRaw`** companion (`[JsonPropertyName("level")]`) so an explicit `"level": "none"` stays `None` and an absent one stays absent on write. Defaulting on read must not become asserting on write.
+  - `SarifLog.Schema` **lost its initializer entirely**; `SarifWriter` now stamps `SarifLog.CanonicalSchema` on any log that has none. A property default would have been clobbered on read by every pre-net11 runtime, which is the whole bug — and `SarifMerge` needs "no schema" to survive a parse as null.
+
+  Nine regression tests in `SarifDefaultsTests.cs` pin this, and they run per-TFM: revert the source fix and they fail on net10 and pass on net11, which is how the cause was confirmed rather than inferred.
+
 ### Added
+
+- **`Tamp.NetCli.V11`** — wrapper for the .NET 11 SDK CLI, starting at its own version per [ADR 0002](docs/adr/0002-package-naming-convention.md). Same surface as `Tamp.NetCli.V10`.
+
+- **`Tamp.Components.NetCli.V11`** — concrete `dotnet` bodies for the `Tamp.Components` target shapes ([ADR 0020](docs/adr/0020-tamp-components.md)) driving the `dotnet 11` CLI. ADR 0015 only commits to the `NetCli.V{N}` package, but a consumer whose build script targets `net11.0` and composes via `Tamp.Components` needs this one: `Tamp.Components.NetCli.V10` drives SDK 10, which cannot build `net11.0` projects at all.
+
+- **`SarifLog.CanonicalSchema`** — the SARIF 2.1.0 schema URI every log Tamp writes carries, exposed so consumers can assert on it instead of hardcoding the string.
 
 - **The shipped version is announced on an issue when its release is published** ([#164](https://github.com/tamp-build/tamp/issues/164)). `CONTRIBUTING.md` required every closing comment to name its release, but an issue closed *before* the release is cut can only promise one — and the promise is what gets forgotten. #151 and #155 were both closed with "I will comment the version when it is cut", both shipped in 1.20.0, and neither got the comment. The link existed in one direction only: from the release notes to the issue, never back.
 
