@@ -19,7 +19,6 @@
  *   5. after submitting, the new policy is re-read from the Manage panel and
  *      verified; a bad read aborts the run rather than continuing.
  */
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { attach, listPolicies } from './lib.mjs';
 
@@ -54,17 +53,31 @@ if (!repos.length) {
 const die = (msg) => { console.error('\nABORT: ' + msg); process.exit(1); };
 
 // ---- Guard 1 + 2: the repo exists, and it has the workflow the policy names.
-console.log('Pre-flight (GitHub):');
+// Straight to the GitHub REST API rather than shelling out to `gh`: no child
+// process, no PATH lookup, and no dependency on a CLI being installed. These
+// repos are public, so a token is optional -- but unauthenticated calls are
+// capped at 60/hour and each repo costs two, so set GITHUB_TOKEN for a wave of
+// any size (`GITHUB_TOKEN=$(gh auth token) node create.mjs ...`).
+const ghHeaders = {
+  accept: 'application/vnd.github+json',
+  'x-github-api-version': '2022-11-28',
+  ...(process.env.GITHUB_TOKEN ? { authorization: 'Bearer ' + process.env.GITHUB_TOKEN } : {}),
+};
+const ghOk = async (path) => {
+  const res = await fetch('https://api.github.com/' + path, { headers: ghHeaders });
+  if (res.status === 403 || res.status === 429) {
+    die('GitHub API rate-limited (' + res.status + '). Set GITHUB_TOKEN and re-run; nothing was created.');
+  }
+  return res.ok;
+};
+
+console.log('Pre-flight (GitHub' + (process.env.GITHUB_TOKEN ? ', authenticated' : ', anonymous') + '):');
 for (const r of repos) {
   const slug = POLICY.repositoryOwner + '/' + r;
-  try {
-    execFileSync('gh', ['repo', 'view', slug, '--json', 'name'], { stdio: 'pipe' });
-  } catch {
+  if (!(await ghOk('repos/' + slug))) {
     die(slug + ' does not exist or is not visible. The repository field cannot be edited after creation, so nothing was created.');
   }
-  try {
-    execFileSync('gh', ['api', 'repos/' + slug + '/contents/.github/workflows/' + POLICY.workflowFile], { stdio: 'pipe' });
-  } catch {
+  if (!(await ghOk('repos/' + slug + '/contents/.github/workflows/' + POLICY.workflowFile))) {
     die(slug + ' has no .github/workflows/' + POLICY.workflowFile + '. A policy naming a missing workflow can never match.');
   }
   console.log('  ok  ' + slug + '  (+ ' + POLICY.workflowFile + ')');
@@ -163,10 +176,15 @@ try {
       );
     }
     if (!after) {
+      // Line-wise rather than one regex over the whole page: the alternation
+      // inside two greedy [^\n]* runs backtracks badly (S8786).
       const complaint = await page.evaluate(() => {
-        const re = new RegExp('[^\\n]*(?:must be specified|is required|should be provided|invalid)[^\\n]*', 'i');
-        const m = document.body.innerText.match(re);
-        return m ? m[0].trim() : null;
+        const wanted = ['must be specified', 'is required', 'should be provided', 'invalid'];
+        const line = document.body.innerText
+          .split('\n')
+          .map((l) => l.trim())
+          .find((l) => wanted.some((w) => l.toLowerCase().includes(w)));
+        return line || null;
       });
       die('submitted ' + repo + ' but no matching policy came back'
         + (complaint ? '. nuget.org says: "' + complaint + '"' : '. Check the page before re-running.')

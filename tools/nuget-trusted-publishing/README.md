@@ -32,6 +32,14 @@ node create.mjs --file repos-unconverted.txt         # or work from a list
 browser that holds the nuget.org session — if several Chromes expose CDP, the others
 are somebody's actual browsing and should be left alone.
 
+The GitHub pre-flight goes straight to the REST API, so no `gh` install is needed.
+These repos are public and a token is optional, but anonymous calls are capped at
+60/hour and each repo costs two — so for a wave of any size:
+
+```bash
+GITHUB_TOKEN=$(gh auth token) node create.mjs --file repos-unconverted.txt
+```
+
 ## What it writes
 
 Every policy is created with the configuration proven by the repos already publishing
