@@ -183,10 +183,19 @@ class Build : SecurityPipelineBuild
             .SetProperty("sonar.exclusions", "**/bin/**,**/obj/**,artifacts/**,build/**,docs/**")
             // Coverage shouldn't count test code or build script:
             .SetProperty("sonar.coverage.exclusions", "tests/**,build/**,samples/**")
-            // Tamp.NetCli.V8 / V9 are intentional sibling copies of V10 per
-            // ADR 0002 — drop them from copy-paste detection so duplication
-            // metrics reflect accidental dup, not the by-design pattern (TAM-82).
-            .SetProperty("sonar.cpd.exclusions", "src/Tamp.NetCli.V8/**,src/Tamp.NetCli.V9/**")));
+            // The Tamp.NetCli.V{N} / Tamp.Components.NetCli.V{N} packages are
+            // intentional sibling copies of each other per ADR 0002 — one package
+            // per wrapped CLI major, so each can diverge as that major's surface
+            // changes (V8 and V10 already differ). Drop the whole family from
+            // copy-paste detection so duplication metrics reflect accidental dup,
+            // not the by-design pattern (TAM-82). Globbed rather than listed, so
+            // the next major to ship doesn't fail the gate on arrival the way
+            // V11 did (tamp#167).
+            //
+            // SonarCloud runs Automatic Analysis and does NOT read this, so the
+            // same value is set as the sonar.cpd.exclusions project setting there.
+            // Keep the two in step.
+            .SetProperty("sonar.cpd.exclusions", "src/Tamp.NetCli.V*/**,src/Tamp.Components.NetCli.V*/**")));
 
     Target SonarEnd => _ => _
         .Description("Finalize SonarScanner and submit results to the server.")
