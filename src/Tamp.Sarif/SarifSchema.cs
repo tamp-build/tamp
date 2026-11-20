@@ -7,18 +7,55 @@ namespace Tamp.Sarif;
 /// </summary>
 public sealed record SarifLog
 {
-    public string Version { get; init; } = "2.1.0";
+    /// <summary>The canonical SARIF 2.1.0 schema URI every log Tamp writes carries.</summary>
+    public const string CanonicalSchema = "https://json.schemastore.org/sarif-2.1.0.json";
 
+    // A non-nullable property with an initializer is only honoured when the
+    // serializer leaves absent JSON members alone. .NET 11's System.Text.Json
+    // source generator does; every earlier one (net8/net9/net10) overwrites the
+    // member with default(T) instead, so "version" went missing, "runs" came
+    // back null, and an absent "level" read as None rather than Warning. Both
+    // TFMs are supported, so the default is enforced in the accessor rather
+    // than left to the runtime. See tamp#166.
+
+    private readonly string _version = "2.1.0";
+    private readonly IReadOnlyList<SarifRun> _runs = [];
+
+    public string Version
+    {
+        get => _version;
+        init => _version = value ?? "2.1.0";
+    }
+
+    /// <summary>
+    /// SARIF 2.1.0 $schema. Deliberately has no default: a non-null initializer
+    /// here is exactly what diverged between runtimes, because net10 and earlier
+    /// overwrite it on deserialization and net11 does not. With no initializer,
+    /// an absent $schema reads as <c>null</c> on every supported TFM, and
+    /// <see cref="SarifWriter"/> supplies <see cref="CanonicalSchema"/> on the
+    /// way out — so every log Tamp writes is schema-tagged without this property
+    /// having to lie about what the input contained.
+    /// </summary>
     [JsonPropertyName("$schema")]
-    public string? Schema { get; init; } = "https://json.schemastore.org/sarif-2.1.0.json";
+    public string? Schema { get; init; }
 
-    public IReadOnlyList<SarifRun> Runs { get; init; } = [];
+    public IReadOnlyList<SarifRun> Runs
+    {
+        get => _runs;
+        init => _runs = value ?? [];
+    }
 }
 
 /// <summary>SARIF 2.1.0 run (§3.14). One per tool invocation.</summary>
 public sealed record SarifRun
 {
-    public SarifTool Tool { get; init; } = new();
+    private readonly SarifTool _tool = new();
+
+    public SarifTool Tool
+    {
+        get => _tool;
+        init => _tool = value ?? new();
+    }
     public IReadOnlyList<SarifResult>? Results { get; init; }
 
     /// <summary>
@@ -33,13 +70,25 @@ public sealed record SarifRun
 /// <summary>SARIF 2.1.0 tool (§3.18). Wraps the driver component.</summary>
 public sealed record SarifTool
 {
-    public SarifToolComponent Driver { get; init; } = new();
+    private readonly SarifToolComponent _driver = new();
+
+    public SarifToolComponent Driver
+    {
+        get => _driver;
+        init => _driver = value ?? new();
+    }
 }
 
 /// <summary>SARIF 2.1.0 toolComponent (§3.19). Describes the analyser.</summary>
 public sealed record SarifToolComponent
 {
-    public string Name { get; init; } = "";
+    private readonly string _name = "";
+
+    public string Name
+    {
+        get => _name;
+        init => _name = value ?? "";
+    }
     public string? Version { get; init; }
     public string? SemanticVersion { get; init; }
     public string? InformationUri { get; init; }
@@ -58,7 +107,13 @@ public sealed record SarifToolComponent
 /// <summary>SARIF 2.1.0 reportingDescriptor (§3.49). Rule metadata.</summary>
 public sealed record SarifRule
 {
-    public string Id { get; init; } = "";
+    private readonly string _id = "";
+
+    public string Id
+    {
+        get => _id;
+        init => _id = value ?? "";
+    }
     public string? Name { get; init; }
     public SarifMultiformatMessage? ShortDescription { get; init; }
     public SarifMultiformatMessage? FullDescription { get; init; }
@@ -87,15 +142,81 @@ public sealed record SarifRule
 /// <summary>SARIF 2.1.0 reportingConfiguration (§3.50). Per-rule defaults.</summary>
 public sealed record SarifReportingConfiguration
 {
-    public SarifLevel Level { get; init; } = SarifLevel.Warning;
+    private readonly SarifLevel? _level;
+
+    /// <summary>
+    /// SARIF 2.1.0 reportingConfiguration.level (§3.50.3). An absent level means "defer to the rule's
+    /// defaultConfiguration", which itself defaults to warning — so an absent
+    /// level reads as <see cref="SarifLevel.Warning"/> and never as
+    /// <see cref="SarifLevel.None"/>. Reading it as None would silently sort a
+    /// finding below any "warning and above" gate (tamp#166).
+    /// </summary>
+    [JsonIgnore]
+    public SarifLevel Level
+    {
+        get => _level ?? SarifLevel.Warning;
+        init => _level = value;
+    }
+
+    /// <summary>
+    /// The level exactly as it appears in JSON, or <c>null</c> when the document
+    /// omits it. Serialized in place of <see cref="Level"/> so an absent level
+    /// stays absent on round-trip and stays distinguishable from an explicit
+    /// <c>"none"</c> — a distinction a non-nullable property cannot carry.
+    /// Prefer <see cref="Level"/> in code.
+    /// </summary>
+    [JsonInclude]
+    [JsonPropertyName("level")]
+    public SarifLevel? LevelRaw
+    {
+        get => _level;
+        init => _level = value;
+    }
 }
 
 /// <summary>SARIF 2.1.0 result (§3.27). A single finding.</summary>
 public sealed record SarifResult
 {
+    private readonly SarifMessage _message = new();
+
     public string? RuleId { get; init; }
-    public SarifLevel Level { get; init; } = SarifLevel.Warning;
-    public SarifMessage Message { get; init; } = new();
+
+    private readonly SarifLevel? _level;
+
+    /// <summary>
+    /// SARIF 2.1.0 result.level (§3.27.10). An absent level means "defer to the rule's
+    /// defaultConfiguration", which itself defaults to warning — so an absent
+    /// level reads as <see cref="SarifLevel.Warning"/> and never as
+    /// <see cref="SarifLevel.None"/>. Reading it as None would silently sort a
+    /// finding below any "warning and above" gate (tamp#166).
+    /// </summary>
+    [JsonIgnore]
+    public SarifLevel Level
+    {
+        get => _level ?? SarifLevel.Warning;
+        init => _level = value;
+    }
+
+    /// <summary>
+    /// The level exactly as it appears in JSON, or <c>null</c> when the document
+    /// omits it. Serialized in place of <see cref="Level"/> so an absent level
+    /// stays absent on round-trip and stays distinguishable from an explicit
+    /// <c>"none"</c> — a distinction a non-nullable property cannot carry.
+    /// Prefer <see cref="Level"/> in code.
+    /// </summary>
+    [JsonInclude]
+    [JsonPropertyName("level")]
+    public SarifLevel? LevelRaw
+    {
+        get => _level;
+        init => _level = value;
+    }
+
+    public SarifMessage Message
+    {
+        get => _message;
+        init => _message = value ?? new();
+    }
     public IReadOnlyList<SarifLocation>? Locations { get; init; }
 
     /// <summary>
@@ -209,7 +330,13 @@ public sealed record SarifToolComponentReference
 /// </summary>
 public sealed record SarifReportingDescriptorRelationship
 {
-    public SarifReportingDescriptorReference Target { get; init; } = new();
+    private readonly SarifReportingDescriptorReference _target = new();
+
+    public SarifReportingDescriptorReference Target
+    {
+        get => _target;
+        init => _target = value ?? new();
+    }
     public IReadOnlyList<string>? Kinds { get; init; }
 }
 
@@ -271,7 +398,13 @@ public sealed record SarifPhysicalLocation
 /// <summary>SARIF 2.1.0 artifactLocation (§3.4). Points at a file (URI-form).</summary>
 public sealed record SarifArtifactLocation
 {
-    public string Uri { get; init; } = "";
+    private readonly string _uri = "";
+
+    public string Uri
+    {
+        get => _uri;
+        init => _uri = value ?? "";
+    }
     public string? UriBaseId { get; init; }
 }
 
@@ -315,6 +448,12 @@ public sealed record SarifMessage
 /// <summary>SARIF 2.1.0 multiformatMessageString (§3.12). Text required, markdown optional.</summary>
 public sealed record SarifMultiformatMessage
 {
-    public string Text { get; init; } = "";
+    private readonly string _text = "";
+
+    public string Text
+    {
+        get => _text;
+        init => _text = value ?? "";
+    }
     public string? Markdown { get; init; }
 }
