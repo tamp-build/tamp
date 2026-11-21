@@ -85,8 +85,17 @@ public static class InitCommand
         var buildCsAlreadyPresent = File.Exists(Path.Combine(repoRoot.Value, "build", "Build.cs"));
         if (buildCsAlreadyPresent && !opts.Force)
         {
-            await stderr.WriteLineAsync($"tamp init: build/Build.cs already exists at '{repoRoot.Value}'. " +
-                                        "Pass --force to overwrite.");
+            // CancellationToken.None, not ct, and deliberately so. This is the
+            // user-facing explanation of why the command refused, written
+            // immediately before `return ExitFileExists` -- cancelling it would
+            // trade a complete message and a clean exit code for a truncated
+            // message and an OperationCanceledException. S8949 accepts an
+            // explicit None as the opt-out; S6966 wants the async call. This
+            // satisfies both rather than moving the finding between them.
+            await stderr.WriteLineAsync(
+                ($"tamp init: build/Build.cs already exists at '{repoRoot.Value}'. " +
+                 "Pass --force to overwrite.").AsMemory(),
+                CancellationToken.None);
             return ExitFileExists;
         }
 
