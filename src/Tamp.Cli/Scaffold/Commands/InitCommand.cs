@@ -85,8 +85,8 @@ public static class InitCommand
         var buildCsAlreadyPresent = File.Exists(Path.Combine(repoRoot.Value, "build", "Build.cs"));
         if (buildCsAlreadyPresent && !opts.Force)
         {
-            await stderr.WriteLineAsync($"tamp init: build/Build.cs already exists at '{repoRoot.Value}'. " +
-                                        "Pass --force to overwrite.");
+            stderr.WriteLine($"tamp init: build/Build.cs already exists at '{repoRoot.Value}'. " +
+                             "Pass --force to overwrite.");
             return ExitFileExists;
         }
 
