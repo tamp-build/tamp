@@ -16,20 +16,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-latest is TEMPORARILY SUSPENDED (2026-11-05). GitHub's macOS arm64 pool has been
-        # failing to assign a runner: the job sits with runner_name empty and zero steps for ~15
-        # minutes and is then cancelled, so it never executes a single step and produces no runner
-        # log. Nothing in this workflow is involved — there is no timeout-minutes and no concurrency
-        # group here, and a job with zero steps cannot have been affected by either.
+        # macOS was SUSPENDED 2026-11-05 and RESTORED 2026-11-25 (tamp#162). GitHub's macOS arm64
+        # pool had been failing to assign a runner: the job sat with runner_name empty and zero steps
+        # for ~15 minutes, then was cancelled having executed nothing.
         #
-        # Observed across tamp-build: tamp#130 on 2026-11-04, then tamp#160 and tamp-syft#12 on
-        # 2026-11-05 (the latter twice). The tell is decisive: tamp-grype acquired a macOS runner at
-        # 16:52:42 and tamp-syft's request five seconds later at 16:52:47 never got one. GitHub's
-        # status page showed all green throughout, as it did for the 2026-11-04 occurrence.
+        # Restored on measurement, not on hope: 168 macOS jobs across 14 tamp-build repos that kept
+        # the leg showed 0 stranded and 98.2% success (the 3 failures were real test/tool failures
+        # with a runner and steps). The last stranding anywhere was 2026-11-20, during a burst that
+        # pushed ~45 repos' CI at once -- self-inflicted contention rather than the original defect.
         #
-        # RESTORE by adding macos-latest back to this list. Tracked in tamp#162 — this list is the
-        # only thing that needs changing, and the macOS steps below are unchanged and still correct.
-        os: [ubuntu-latest, windows-latest]
+        # The tell, if it ever comes back: conclusion=cancelled, runner_name empty, steps=0. That is
+        # runner assignment failing, never a test failure, and re-running the job is the fix.
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     env:
       DOTNET_NOLOGO: '1'
